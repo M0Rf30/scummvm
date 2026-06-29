@@ -37,7 +37,6 @@ public:
 	const Common::Array<byte> &getXtraData() const { return _xtraData; }
 
 	static CastMember *promote(Cast *cast, uint16 castId, XtraCastMember *xtra);
-
 	bool hasField(int field) override;
 	Datum getField(int field) override;
 	void setField(int field, const Datum &value) override;

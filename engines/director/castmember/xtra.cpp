@@ -101,7 +101,6 @@ CastMember *XtraCastMember::promote(Cast *cast, uint16 castId, XtraCastMember *x
 	delete xtra;
 	return promoted;
 }
-
 bool XtraCastMember::hasField(int field) {
 	switch (field) {
 	case kTheCuePointNames:		// D6
