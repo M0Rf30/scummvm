@@ -192,6 +192,7 @@ namespace Director {
 const char *BudAPIXtra::xlibName = "BudAPI";
 const XlibFileDesc BudAPIXtra::fileNames[] = {
 	{ "budapi",   nullptr },
+	{ "budapi32", nullptr },
 	{ nullptr,        nullptr },
 };
 
@@ -249,6 +250,8 @@ static BuiltinProto xlibBuiltins[] = {
 	{ "baFreeCursor", BudAPIXtra::m_baFreeCursor, 0, 0, 500, HBLTIN },
 	{ "baSetVolume", BudAPIXtra::m_baSetVolume, 2, 2, 500, HBLTIN },
 	{ "baGetVolume", BudAPIXtra::m_baGetVolume, 1, 1, 500, HBLTIN },
+	{ "baDiskList", BudAPIXtra::m_baDiskList, 0, 0, 500, HBLTIN },
+	{ "baEjectDisk", BudAPIXtra::m_baEjectDisk, 1, 1, 500, HBLTIN },
 	{ "baInstallFont", BudAPIXtra::m_baInstallFont, 2, 2, 500, HBLTIN },
 	{ "baKeyIsDown", BudAPIXtra::m_baKeyIsDown, 1, 1, 500, HBLTIN },
 	{ "baKeyBeenPressed", BudAPIXtra::m_baKeyBeenPressed, 1, 1, 500, HBLTIN },
@@ -458,8 +461,30 @@ XOBJSTUB(BudAPIXtra::m_baSetPrinter, 0)
 XOBJSTUB(BudAPIXtra::m_baRefreshDesktop, 0)
 XOBJSTUB(BudAPIXtra::m_baFileAge, 0)
 void BudAPIXtra::m_baFileExists(int nargs) {
-	Common::String name = g_lingo->pop().asString();
-	g_lingo->push(Datum(findPath(name, true, true, false).empty() ? 0 : 1));
+	// baFileExists(string fileName) -> 1 if the file is reachable, else 0.
+	// The game passes Windows-style CD paths (e.g. _Cd1Root & "CDNr1.rup");
+	// findPath() resolves them against the current folder and search paths,
+	// matching by last path component when the absolute prefix is unknown.
+	Common::String path;
+	for (int i = 0; i < nargs; i++) {
+		Datum d = g_lingo->pop();
+		if (i == nargs - 1)
+			path = d.asString();
+	}
+	g_lingo->push(Datum(findPath(path, true, true, false).empty() ? 0 : 1));
+}
+void BudAPIXtra::m_baDiskList(int nargs) {
+	// No removable-volume concept under ScummVM. Return an empty list so the
+	// callers' count()/repeat loops (e.g. VolumeAuswerfen) are no-ops.
+	g_lingo->dropStack(nargs);
+	Datum result;
+	result.type = ARRAY;
+	result.u.farr = new FArray();
+	g_lingo->push(result);
+}
+void BudAPIXtra::m_baEjectDisk(int nargs) {
+	g_lingo->dropStack(nargs);
+	g_lingo->push(Datum(0));
 }
 XOBJSTUB(BudAPIXtra::m_baFolderExists, 0)
 XOBJSTUB(BudAPIXtra::m_baCreateFolder, 0)
