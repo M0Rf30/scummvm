@@ -42,6 +42,7 @@
 #include "director/sound.h"
 #include "director/sprite.h"
 #include "director/stxt.h"
+#include "director/xmed.h"
 #include "director/castmember/castmember.h"
 #include "director/castmember/bitmap.h"
 #include "director/castmember/digitalvideo.h"
@@ -128,6 +129,9 @@ Cast::~Cast() {
 		delete it._value;
 
 	for (auto &it : _loadedRTE2s)
+		delete it._value;
+
+	for (auto &it : _loadedXMEDs)
 		delete it._value;
 
 	delete _loadedCast;
@@ -918,6 +922,19 @@ void Cast::loadCast() {
 		r = _castArchive->getResource(MKTAG('R','T','E','2'), iterator);
 		debugC(3, kDebugText, "RTE2: id %d", iterator - _castIDoffset);
 		_loadedRTE2s.setVal(iterator, new RTE2(this, *r, iterator));
+		delete r;
+	}
+
+	// Director 7+ Xtra cast members (e.g. the "Text" Asset Xtra) keep their
+	// media in an XMED child resource. Decode them so the owning cast member
+	// can render its text.
+	Common::Array<uint16> xmed = _castArchive->getResourceIDList(MKTAG('X','M','E','D'));
+	debugC(2, kDebugLoading, "****** Loading %d XMED resources", xmed.size());
+
+	for (auto &iterator : xmed) {
+		r = _castArchive->getResource(MKTAG('X','M','E','D'), iterator);
+		debugC(3, kDebugText, "XMED: id %d", iterator - _castIDoffset);
+		_loadedXMEDs.setVal(iterator, new XMED(this, *r));
 		delete r;
 	}
 
