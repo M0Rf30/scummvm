@@ -1865,7 +1865,10 @@ void LB::b_xtra(int nargs) {
 			}
 		}
 	}
-	g_lingo->lingoError("Xtra not found: %s", d.asString().c_str());
+	// An Xtra we don't implement is an engine gap, not a script error, so don't
+	// abort the handler over it.
+	warning("b_xtra: Xtra not found: %s", d.asString().c_str());
+	g_lingo->push(Datum());
 }
 
 ///////////////////
