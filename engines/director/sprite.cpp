@@ -368,6 +368,10 @@ bool Sprite::isActive() {
 	if (_cast && _cast->_type == kCastButton)
 		return true;
 
+	// D6+ behavior-only sprites (no score/cast script) mirrors respondsToMouse().
+	if (g_director->getVersion() >= 600 && _behaviors.size() > 0)
+		return true;
+
 	return (_movie->getScriptContext(kScoreScript, _scriptId) != nullptr)
 			|| (_movie->getScriptContext(kCastScript, _castId) != nullptr);
 }
