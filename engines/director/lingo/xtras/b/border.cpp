@@ -29,13 +29,20 @@
  *
  * USED IN:
  * Physikus (l'Espresso, Italian; Ruske & Pühretmaier)
+ * Chemicus / Bioscopia and other Heureka-Klett titles
  *
  **************************************************/
 
 /*
- * Border() -- registers the Border Xtra instance.
- * new object me
- * Register object me, integer key -- validate the registration key
+ * The "Border" Xtra (Border.x32) draws a thin frame around the projector
+ * window and gates execution on a registration key. It exposes:
+ *   new object me
+ *   Register object me, integer key -- validate the registration key
+ *
+ * Both are copy-protection / cosmetic no-ops here: we register so that
+ * Register() resolves as a method on the Xtra instance instead of aborting
+ * the calling handler (which on Physikus would skip the rest of the boot
+ * movie's frame-1 setup, leaving searchPaths and the CD roots unset).
  */
 
 namespace Director {
@@ -92,6 +99,7 @@ void BorderXtra::m_new(int nargs) {
 	g_lingo->push(g_lingo->_state->me);
 }
 
+// Register(me, key): copy-protection check; always succeeds (no-op).
 XOBJSTUB(BorderXtra::m_register, 0)
 
 } // End of namespace Director
