@@ -20,6 +20,7 @@
  */
 
 #include "common/system.h"
+#include "common/formats/ini-file.h"
 
 #include "director/director.h"
 #include "director/util.h"
@@ -381,10 +382,52 @@ XOBJSTUB(BudAPIXtra::m_baCpuInfo, 0)
 XOBJSTUB(BudAPIXtra::m_baDiskInfo, 0)
 XOBJSTUB(BudAPIXtra::m_baMemoryInfo, 0)
 XOBJSTUB(BudAPIXtra::m_baFindApp, 0)
-XOBJSTUB(BudAPIXtra::m_baReadIni, 0)
-XOBJSTUB(BudAPIXtra::m_baWriteIni, 0)
+void BudAPIXtra::m_baReadIni(int nargs) {
+	// Mirrors GetPrivateProfileString: case-insensitive, default on any miss.
+	ARGNUMCHECK(4);
+	Common::String iniFile = g_lingo->pop().asString();
+	Common::String defaultVal = g_lingo->pop().asString();
+	Common::String key = g_lingo->pop().asString();
+	Common::String section = g_lingo->pop().asString();
+
+	Common::Path resolved = findPath(iniFile);
+	Common::INIFile ini;
+	ini.allowNonEnglishCharacters();
+	Common::String value;
+	if (!resolved.empty() && ini.loadFromFile(resolved) && ini.getKey(key, section, value)) {
+		g_lingo->push(Datum(value));
+		return;
+	}
+	g_lingo->push(Datum(defaultVal));
+}
+void BudAPIXtra::m_baWriteIni(int nargs) {
+	// Best-effort persist; read-only media (e.g. CD) leaves the value unsaved.
+	ARGNUMCHECK(4);
+	Common::String iniFile = g_lingo->pop().asString();
+	Common::String value = g_lingo->pop().asString();
+	Common::String key = g_lingo->pop().asString();
+	Common::String section = g_lingo->pop().asString();
+
+	Common::Path resolved = findPath(iniFile);
+	Common::INIFile ini;
+	ini.allowNonEnglishCharacters();
+	if (!resolved.empty())
+		ini.loadFromFile(resolved);
+	ini.setKey(key, section, value);
+	if (!resolved.empty())
+		ini.saveToFile(resolved);
+	g_lingo->push(Datum(1));
+}
 XOBJSTUB(BudAPIXtra::m_baFlushIni, 0)
-XOBJSTUB(BudAPIXtra::m_baReadRegString, 0)
+void BudAPIXtra::m_baReadRegString(int nargs) {
+	// No Windows registry in ScummVM; return the caller's default.
+	ARGNUMCHECK(4);
+	/* branch  */ g_lingo->pop();
+	Common::String defaultVal = g_lingo->pop().asString();
+	/* value   */ g_lingo->pop();
+	/* keyName */ g_lingo->pop();
+	g_lingo->push(Datum(defaultVal));
+}
 XOBJSTUB(BudAPIXtra::m_baWriteRegString, 0)
 XOBJSTUB(BudAPIXtra::m_baReadRegNumber, 0)
 XOBJSTUB(BudAPIXtra::m_baWriteRegNumber, 0)
