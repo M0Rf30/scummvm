@@ -36,6 +36,7 @@ public:
 	bool isQuickTimeVideo() const;
 	bool isQuickTimeLooping() const;
 	bool isTextXtra() const;
+	bool isFontXtra() const;
 
 	bool hasField(int field) override;
 	Datum getField(int field) override;

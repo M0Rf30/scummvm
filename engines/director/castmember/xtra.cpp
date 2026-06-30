@@ -59,8 +59,8 @@ XtraCastMember::XtraCastMember(Cast *cast, uint16 castId, Common::SeekableReadSt
 		// TODO: Process data in the Xtra
 	}
 
-	// quickTimeMedia/text are promoted in Cast::loadCastData(); don't warn about them here.
-	if (!isQuickTimeVideo() && !isTextXtra())
+	// quickTimeMedia/text/font are handled elsewhere; don't warn about them here.
+	if (!isQuickTimeVideo() && !isTextXtra() && !isFontXtra())
 		warning("STUB: XtraCastMember::XtraCastMember(): Xtra cast members not yet supported for version v%d (%d)", humanVersion(_cast->_version), _cast->_version);
 }
 
@@ -82,6 +82,12 @@ bool XtraCastMember::isQuickTimeLooping() const {
 bool XtraCastMember::isTextXtra() const {
 	// Symbol observed in Physikus (D7.0.2)'s "Text" Asset Xtra; string lives in an XMED child.
 	return _xtraSymbol.equalsIgnoreCase("text");
+}
+
+bool XtraCastMember::isFontXtra() const {
+	// Symbol observed in Physikus's "Font Asset"/"Font Xtra"; ScummVM has no
+	// PFR decoder, so text using it falls back to a substitute font.
+	return _xtraSymbol.equalsIgnoreCase("font");
 }
 
 bool XtraCastMember::hasField(int field) {
