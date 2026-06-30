@@ -102,6 +102,14 @@ CastMember *XtraCastMember::promote(Cast *cast, uint16 castId, XtraCastMember *x
 	return promoted;
 }
 
+bool XtraCastMember::isFontXtra() const {
+	// "Font Asset" / "Font Xtra". In D7+ this is how embedded fonts are stored
+	// in the cast; the payload wraps a PFR1 (Bitstream TrueDoc) font in an XMED
+	// child. ScummVM has no PFR decoder, so the font itself is not rendered;
+	// text that references it is drawn with a substitute font instead.
+	return _xtraSymbol.equalsIgnoreCase("font");
+}
+
 bool XtraCastMember::hasField(int field) {
 	switch (field) {
 	case kTheCuePointNames:		// D6
