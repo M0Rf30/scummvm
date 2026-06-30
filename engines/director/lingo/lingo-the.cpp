@@ -2759,7 +2759,13 @@ void Lingo::setObjectProp(Datum &obj, Common::String &propName, Datum &val) {
 		if (member->hasProp(propName)) {
 			member->setProp(propName, val);
 		} else {
-			g_lingo->lingoError("Lingo::setObjectProp(): %s has no property '%s'", id.asString().c_str(), propName.c_str());
+			// A property ScummVM does not model is an engine gap, not a script
+			// error, so don't abort the running handler mid-frame over it: that
+			// drops the rest of the script (e.g. an exitFrame behavior that has
+			// already installed a navigation handler). Warn and ignore, as the
+			// non-MEDIA case above and the CASTLIBREF/SPRITEREF branches below
+			// already do for a property they cannot apply.
+			warning("Lingo::setObjectProp(): %s has no property '%s', ignoring", id.asString().c_str(), propName.c_str());
 		}
 	} else if (obj.type == CASTLIBREF) {
 		Common::String key = Common::String::format("%d%s", kTheCastLib, propName.c_str());
