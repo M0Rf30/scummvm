@@ -637,6 +637,16 @@ void DigitalVideoCastMember::setStopTime(int stamp) {
 
 	_channel->_stopTime = stamp;
 
+	// startVideo() already treats a _stopTime of 0 as "not set", substituting
+	// getMovieTotalTime(); setEndTime() would instead end the video before a
+	// frame is shown, since VideoDecoder tests getNextFrameStartTime() >=
+	// (uint)_endTime.msecs(). The same unsigned cast makes a negative stamp a
+	// huge bound, so neither is a usable end time.
+	if (stamp <= 0) {
+		debugC(2, kDebugImages, "DigitalVideoCastMember::setStopTime(): stamp %d, leaving the video end time unset", stamp);
+		return;
+	}
+
 	Audio::Timestamp dur = _video->getDuration();
 
 	_video->setEndTime(Audio::Timestamp(_channel->_stopTime * 1000 / getTimeScale(), dur.framerate()));
