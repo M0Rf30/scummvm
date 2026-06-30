@@ -502,10 +502,31 @@ void Score::updateCurrentFrame() {
 				}
 			}
 		}
+		// Snapshot the outgoing frame's score data so we can detect where
+		// the score's recorded sprite actually changes across this move.
+		Common::Array<CastMemberID> prevScoreCast(_currentFrame->_sprites.size());
+		for (uint ch = 0; ch < _currentFrame->_sprites.size(); ch++)
+			prevScoreCast[ch] = _currentFrame->_sprites[ch]->_castId;
 
 		// Load the current sprite information into the _currentFrame data store.
 		// This copies in the frame data and updates _curFrameNumber.
 		loadFrame(nextFrameNumberToLoad, true);
+
+		// Auto-puppeting (latched when a Lingo script changes a sprite
+		// property such as its member/ink/loc) survives ordinary frame
+		// advances while the score's recorded data for the channel stays
+		// the same; the score reasserts control only where its own sprite
+		// data changes (a new sprite span/keyframe). Measured in Director
+		// 8.0: a non-puppet Lingo member swap persists across identical
+		// score frames and is overridden exactly at the frame where the
+		// scored member changes. Manual puppetSprite is NOT affected.
+		// Without this reset the latch (e.g. kAPCast set by an animation in
+		// one room) would persist into the next room's differing score data,
+		// leaving the previous scene's sprite drawn over the new one.
+		for (uint ch = 0; ch < _channels.size() && ch < _currentFrame->_sprites.size(); ch++) {
+			if (ch < prevScoreCast.size() && prevScoreCast[ch] != _currentFrame->_sprites[ch]->_castId)
+				_channels[ch]->_sprite->_autoPuppet = kAPNone;
+		}
 
 		// Finally, update the channels and buffer any dirty rectangles.
 		// This will ignore any channel data that is overridden with the puppet flag.
