@@ -475,10 +475,11 @@ Graphics::MacWidget *DigitalVideoCastMember::createWidget(Common::Rect &bbox, Ch
 		}
 	}
 
-	// Zero-sized bbox: nothing to render, and scaling to it would divide by zero.
+	// A zero-sized sprite bbox (e.g. a video sprite not yet positioned/sized)
+	// has nothing to render; creating a 0-dimension widget would later divide
+	// by zero in the scaler and read out of bounds in the ink blitter.
 	if (bbox.width() <= 0 || bbox.height() <= 0)
 		return nullptr;
-
 	Graphics::MacWidget *widget = new Graphics::MacWidget(g_director->getCurrentWindow()->getMacWindow(), bbox.left, bbox.top, bbox.width(), bbox.height(), g_director->_wm, false);
 
 	_channel = channel;
