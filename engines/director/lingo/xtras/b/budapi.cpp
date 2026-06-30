@@ -434,7 +434,11 @@ XOBJSTUB(BudAPIXtra::m_baWriteRegNumber, 0)
 XOBJSTUB(BudAPIXtra::m_baDeleteReg, 0)
 XOBJSTUB(BudAPIXtra::m_baRegKeyList, 0)
 XOBJSTUB(BudAPIXtra::m_baRegValueList, 0)
-XOBJSTUB(BudAPIXtra::m_baSoundCard, 0)
+void BudAPIXtra::m_baSoundCard(int nargs) {
+	// Gates chapter narration (_SoundSchalter); ScummVM always has a mixer.
+	g_lingo->dropStack(nargs);
+	g_lingo->push(Datum(1));
+}
 XOBJSTUB(BudAPIXtra::m_baFontInstalled, 0)
 XOBJSTUB(BudAPIXtra::m_baFontList, 0)
 XOBJSTUB(BudAPIXtra::m_baFontStyleList, 0)
