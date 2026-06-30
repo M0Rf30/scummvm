@@ -305,6 +305,10 @@ bool Channel::isDirty(Sprite *nextSprite) {
 			isDirtyFlag |= _sprite->getPosition() != nextSprite->getPosition();
 		if (isStretched() && !hasTextCastMember(_sprite))
 			isDirtyFlag |= _sprite->_width != nextSprite->_width || _sprite->_height != nextSprite->_height;
+		// D6+: sprite-details index selects behaviors/frame range; flag it dirty
+		// too, or a stale sprite keeps an emptied _behaviors/-1 range.
+		if (g_director->getVersion() >= 600)
+			isDirtyFlag |= _sprite->_spriteListIdx != nextSprite->_spriteListIdx;
 	}
 
 	return isDirtyFlag;
