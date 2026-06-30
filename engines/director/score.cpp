@@ -2023,7 +2023,8 @@ void Score::loadFrames(Common::SeekableReadStreamEndian &stream, uint16 version,
 
 				Common::MemoryReadStreamEndian *stream1 = getSpriteDetailsStream(i);
 				if (stream1) {
-					stream1->hexdump(stream1->size());
+					if (debugChannelSet(2, kDebugLoading))
+						stream1->hexdump(stream1->size());
 					delete stream1;
 				}
 			}
