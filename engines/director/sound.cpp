@@ -117,7 +117,9 @@ uint8 DirectorSound::getChannelVolume(int soundChannel) {
 void DirectorSound::setChannelDefaultVolume(int soundChannel) {
 	int vol = _volumes.getValOrDefault(soundChannel, g_director->_defaultVolume);
 
-	_channels[soundChannel]->volume = vol;
+	// _defaultVolume reaches kMaxMixerVolume (256), which wraps to 0 in the byte
+	// channel volume.
+	_channels[soundChannel]->volume = MIN(vol, 255);
 }
 
 void DirectorSound::setChannelPitchShift(int soundChannel, int pitchShiftPercent) {
