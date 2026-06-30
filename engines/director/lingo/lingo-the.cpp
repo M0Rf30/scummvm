@@ -2731,7 +2731,9 @@ void Lingo::setObjectProp(Datum &obj, Common::String &propName, Datum &val) {
 		if (member->hasProp(propName)) {
 			member->setProp(propName, val);
 		} else {
-			g_lingo->lingoError("Lingo::setObjectProp(): %s has no property '%s'", id.asString().c_str(), propName.c_str());
+			// Unmodeled property set (e.g. `.scale` on a digital-video member in
+			// Physikus): warn instead of aborting the handler mid-frame.
+			warning("Lingo::setObjectProp(): %s has no property '%s', ignoring", id.asString().c_str(), propName.c_str());
 		}
 	} else if (obj.type == CASTLIBREF) {
 		Common::String key = Common::String::format("%d%s", kTheCastLib, propName.c_str());
