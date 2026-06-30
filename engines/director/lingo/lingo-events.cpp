@@ -653,7 +653,28 @@ void Movie::queueEvent(Common::Queue<LingoEvent> &queue, LEvent event, int targe
 		case kEventOpenWindow:  		// D5
 		case kEventCloseWindow:  		// D5
 		case kEventZoomWindow:  		// D5
-			queue.push(LingoEvent(event, eventId, kMovieHandler, false, pos, channelId));
+			{
+				// One event per handling movie script, in the cast order
+				// resolveScriptEvent() used, so the first script chosen is
+				// unchanged but `pass` can reach the rest. passByDefault is
+				// false, so a script that does not pass swallows the successors.
+				for (auto &cast : _casts) {
+					LingoArchive *archive = cast._value->_lingoArchive;
+					if (!archive)
+						continue;
+					for (auto &it : archive->scriptContexts[kMovieScript]) {
+						if (it._value->_eventHandlers.contains(event))
+							queue.push(LingoEvent(event, eventId, kMovieScript, false, CastMemberID(it._key, cast._key), pos));
+					}
+				}
+				LingoArchive *sharedArchive = getSharedLingoArch();
+				if (sharedArchive) {
+					for (auto &it : sharedArchive->scriptContexts[kMovieScript]) {
+						if (it._value->_eventHandlers.contains(event))
+							queue.push(LingoEvent(event, eventId, kMovieScript, false, CastMemberID(it._key, DEFAULT_CAST_LIB), pos));
+					}
+				}
+			}
 			break;
 
 		default:
