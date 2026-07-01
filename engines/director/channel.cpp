@@ -534,6 +534,22 @@ void Channel::setClean(Sprite *nextSprite, bool partial) {
 		if (_sprite->_puppet || _sprite->_autoPuppet || (!nextSprite->isQDShape() && partial)) {
 			// Updating scripts, etc. does not require a full re-render
 			_sprite->_scriptId = nextSprite->_scriptId;
+
+			// D6+: these are score-owned, so restore them even for a puppeted
+			// sprite, as Sprite::replaceFrom() does before its own puppet
+			// bail-out. replaceSprite() below is skipped for puppets.
+			if (g_director->getVersion() >= 600) {
+				// Gated exactly as in Sprite::replaceFrom(): only the score's
+				// own delta record may move the index.
+				if (nextSprite->_copyBackMask & kSCBSpriteListIdx)
+					_sprite->_spriteListIdx = nextSprite->_spriteListIdx;
+				_sprite->_spriteInfo = nextSprite->_spriteInfo;
+				_sprite->_behaviors = nextSprite->_behaviors;
+				// createScriptInstances() gates on the CHANNEL's frame range,
+				// which killScriptInstances() left at -1.
+				_startFrame = _sprite->_spriteInfo.startFrame;
+				_endFrame = _sprite->_spriteInfo.endFrame;
+			}
 		} else {
 			previousCastId = _sprite->_castId;
 			replaceSprite(nextSprite);
