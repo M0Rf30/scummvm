@@ -249,7 +249,6 @@ public:
 	bool processSysEvents(bool captureClick = false, bool skipWindowManager = false);
 	void processEventQUIT();
 	int getMacTicks();
-	Common::Array<Common::Event> _injectedEvents;
 
 	// game-quirks.cpp
 	void gameQuirks(const char *target, Common::Platform platform);

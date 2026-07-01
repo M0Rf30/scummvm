@@ -44,11 +44,6 @@ namespace Director {
 int DirectorEngine::getMacTicks() { return (int)(g_system->getMillis() * 60 / 1000.) - _tickBaseline; }
 
 bool DirectorEngine::pollEvent(Common::Event &event) {
-	// used by UnitTest XObject
-	if (!_injectedEvents.empty()) {
-		event = _injectedEvents.remove_at(0);
-		return true;
-	}
 	return g_system->getEventManager()->pollEvent(event);
 }
 
