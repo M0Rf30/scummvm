@@ -597,6 +597,18 @@ void Movie::queueEvent(Common::Queue<LingoEvent> &queue, LEvent event, int targe
 		case kEventMouseUpOutSide:	// D6+
 		case kEventMouseWithin:		// D6+
 			if (_vm->getVersion() >= 600) {
+				// D6+: mouseUp/rightMouseUp target whichever sprite captured the
+				// paired mouseDown, not whatever sprite the cursor currently
+				// resolves to. Measured in Director 8.0: the pressed sprite
+				// receives plain mouseUp wherever the button is released, and
+				// no other sprite sees the event.
+				if (event == kEventMouseUp || event == kEventRightMouseUp) {
+					if (_currentMouseDownChannelId != 0)
+						pointedSpriteId = _currentMouseDownChannelId;
+				} else if (event == kEventMouseDown || event == kEventRightMouseDown) {
+					_currentMouseDownChannelId = pointedSpriteId;
+				}
+
 				if (pointedSpriteId != 0) {
 					Channel *channel = _score->getChannelById(pointedSpriteId);
 
