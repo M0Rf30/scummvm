@@ -294,6 +294,11 @@ bool Channel::isDirty(Sprite *nextSprite) {
 	bool isDirtyFlag = _widgetDirty ||
 		(_sprite->_cast && _sprite->_cast->isModified());
 
+	// D6+: sprite-details index selects behaviors/frame range; check even when
+	// puppeted, or killScriptInstances() can permanently kill interactivity.
+	if (g_director->getVersion() >= 600 && _sprite)
+		isDirtyFlag |= _sprite->_spriteListIdx != nextSprite->_spriteListIdx;
+
 	if (_sprite && !_sprite->_puppet && !_sprite->_autoPuppet) {
 		// When puppet is set, the overall dirty flag should be set when sprite is
 		// modified.
@@ -305,10 +310,7 @@ bool Channel::isDirty(Sprite *nextSprite) {
 			isDirtyFlag |= _sprite->getPosition() != nextSprite->getPosition();
 		if (isStretched() && !hasTextCastMember(_sprite))
 			isDirtyFlag |= _sprite->_width != nextSprite->_width || _sprite->_height != nextSprite->_height;
-		// D6+: sprite-details index selects behaviors/frame range; flag it dirty
-		// too, or a stale sprite keeps an emptied _behaviors/-1 range.
-		if (g_director->getVersion() >= 600)
-			isDirtyFlag |= _sprite->_spriteListIdx != nextSprite->_spriteListIdx;
+
 	}
 
 	return isDirtyFlag;
@@ -534,6 +536,19 @@ void Channel::setClean(Sprite *nextSprite, bool partial) {
 		if (_sprite->_puppet || _sprite->_autoPuppet || (!nextSprite->isQDShape() && partial)) {
 			// Updating scripts, etc. does not require a full re-render
 			_sprite->_scriptId = nextSprite->_scriptId;
+
+			// D6+: restore behavior/frame-range bookkeeping even for puppets --
+			// killScriptInstances() can wipe them on a self-looping frame, and
+			// replaceSprite() (which normally restores them) is skipped here.
+			if (g_director->getVersion() >= 600) {
+				_sprite->_spriteListIdx = nextSprite->_spriteListIdx;
+				_sprite->_spriteInfo = nextSprite->_spriteInfo;
+				_sprite->_behaviors = nextSprite->_behaviors;
+				// createScriptInstances() gates on the CHANNEL's start/end frame,
+				// which killScriptInstances() leaves at -1; restore from _spriteInfo.
+				_startFrame = _sprite->_spriteInfo.startFrame;
+				_endFrame = _sprite->_spriteInfo.endFrame;
+			}
 		} else {
 			previousCastId = _sprite->_castId;
 			replaceSprite(nextSprite);
