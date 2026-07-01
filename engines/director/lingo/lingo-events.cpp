@@ -327,8 +327,8 @@ void Movie::resolveScriptEvent(LingoEvent &event) {
 			// Cast script
 			// A strange quirk; if we're in a mouseDown event, Director will test
 			// at runtime to find out whatever is under the mouse and use that.
-			// If we're in a mouseUp event, Director will use whatever was
-			// discovered -at the very beginning- of the mouseDown event chain.
+			// If we're in a mouseUp event, D4-and-below Director will use whatever
+			// was discovered -at the very beginning- of the mouseDown event chain.
 			// This means e.g. the cast member can be swapped out from underneath in
 			// the mouseDown sprite script and the event passed down, which
 			// will mean the old cast member cast script does not get a mouseDown
@@ -336,13 +336,23 @@ void Movie::resolveScriptEvent(LingoEvent &event) {
 			// A bit unhinged, but we have a test that proves Director does this,
 			// so we have to do it too.
 			//
+			// D5+ instead re-resolves the cast script from the sprite's
+			// *current* member: a two-member push button puts the mouseDown
+			// hover-loop on the "armed" member's cast script and the mouseUp
+			// action on the "pressed" member it swaps in, so pinning the
+			// mouseDown-time member left such buttons dead.
+			//
 			// mouseEnter and mouseLeave events should also defer to the value of channelId.
 			CastMemberID targetCast = _currentMouseDownCastID;
 			if ((event.event == kEventMouseDown) || (event.event == kEventRightMouseDown) ||
-				(event.event == kEventMouseEnter) || (event.event == kEventMouseLeave)) {
+				(event.event == kEventMouseEnter) || (event.event == kEventMouseLeave) ||
+				(((event.event == kEventMouseUp) || (event.event == kEventRightMouseUp)) &&
+					_vm->getVersion() >= 500)) {
 				if (!event.channelId)
 					return;
 				Sprite *sprite = _score->getSpriteById(event.channelId);
+				if (!sprite)
+					return;
 				targetCast = sprite->_castId;
 			}
 
