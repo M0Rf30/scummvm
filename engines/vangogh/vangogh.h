@@ -87,8 +87,10 @@ public:
 	/**
 	 * Plays an HNM6 movie from data/movies/<name>.hnm to completion (or
 	 * until skipped via any keypress/click, or the engine is asked to
-	 * quit). Embedded APC audio, if any, is handled automatically by
-	 * Video::HNMDecoder. See hnm-apc-compat.md in the reversing notes for
+	 * quit). Uses HNMPlayer (see hnmplayer.h), a thin non-blocking wrapper
+	 * around Video::HNMDecoder shared with Scene's looping backdrop
+	 * playback; embedded APC audio, if any, is handled automatically by
+	 * HNMDecoder itself. See hnm-apc-compat.md in the reversing notes for
 	 * why this needs no engine-specific decoding work.
 	 */
 	void playVideo(const Common::String &name);
@@ -108,6 +110,14 @@ public:
 	 * fully opaque. See spr.h for the on-disk format.
 	 */
 	void showSPRCell(const Common::String &name, uint32 cellIndex, uint32 durationMs);
+
+	/**
+	 * Enters the scene loop for data/scenes_3d/<name>.bfg + its HNM
+	 * backdrop -- see Scene::load()/Scene::run(). Used by both the
+	 * boot-flow vertical-slice demo (run()) and the `scene <name>`
+	 * console command.
+	 */
+	void enterScene(const Common::String &name);
 
 	/**
 	 * Gets a random number

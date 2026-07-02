@@ -39,6 +39,9 @@ private:
 
 	/** `showspr <basename> [cellIndex]` - decodes and blits cell [cellIndex] (default 0) of data/sprites/<basename>.spr for 5s. */
 	bool Cmd_showSPR(int argc, const char **argv);
+
+	/** `scene <basename>` - enters the scene loop (backdrop + click logging) for data/scenes_3d/<basename>.bfg until a key/quit. */
+	bool Cmd_scene(int argc, const char **argv);
 public:
 	Console();
 	~Console() override;
