@@ -30,6 +30,12 @@ namespace Vangogh {
 class Console : public GUI::Debugger {
 private:
 	bool Cmd_test(int argc, const char **argv);
+
+	/** `playhnm <basename>` - plays data/movies/<basename>.hnm. */
+	bool Cmd_playHNM(int argc, const char **argv);
+
+	/** `showtgp <basename>` - decodes and blits data/gfx/<basename>.TGP for 5s. */
+	bool Cmd_showTGP(int argc, const char **argv);
 public:
 	Console();
 	~Console() override;
