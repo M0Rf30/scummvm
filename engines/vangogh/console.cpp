@@ -20,11 +20,14 @@
  */
 
 #include "vangogh/console.h"
+#include "vangogh/vangogh.h"
 
 namespace Vangogh {
 
 Console::Console() : GUI::Debugger() {
-	registerCmd("test",   WRAP_METHOD(Console, Cmd_test));
+	registerCmd("test",     WRAP_METHOD(Console, Cmd_test));
+	registerCmd("playhnm",  WRAP_METHOD(Console, Cmd_playHNM));
+	registerCmd("showtgp",  WRAP_METHOD(Console, Cmd_showTGP));
 }
 
 Console::~Console() {
@@ -32,6 +35,28 @@ Console::~Console() {
 
 bool Console::Cmd_test(int argc, const char **argv) {
 	debugPrintf("Test\n");
+	return true;
+}
+
+bool Console::Cmd_playHNM(int argc, const char **argv) {
+	if (argc != 2) {
+		debugPrintf("Usage: %s <basename>\n", argv[0]);
+		debugPrintf("Plays data/movies/<basename>.hnm to completion (any key/click skips).\n");
+		return true;
+	}
+
+	g_engine->playVideo(argv[1]);
+	return true;
+}
+
+bool Console::Cmd_showTGP(int argc, const char **argv) {
+	if (argc != 2) {
+		debugPrintf("Usage: %s <basename>\n", argv[0]);
+		debugPrintf("Decodes and shows data/gfx/<basename>.TGP for 5 seconds.\n");
+		return true;
+	}
+
+	g_engine->showTGPImage(argv[1], 5000);
 	return true;
 }
 

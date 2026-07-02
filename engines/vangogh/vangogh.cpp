@@ -22,6 +22,8 @@
 #include "vangogh/vangogh.h"
 #include "vangogh/detection.h"
 #include "vangogh/console.h"
+#include "vangogh/tgp.h"
+#include "audio/mixer.h"
 #include "common/archive.h"
 #include "common/config-manager.h"
 #include "common/debug.h"
@@ -31,7 +33,9 @@
 #include "common/textconsole.h"
 #include "engines/util.h"
 #include "graphics/surface.h"
+#include "image/bmp.h"
 #include "image/tga.h"
+#include "video/hnm_decoder.h"
 
 namespace Vangogh {
 
@@ -73,6 +77,18 @@ Common::Error VangoghEngine::run() {
 	_screen = new Graphics::Screen();
 
 	showIntro();
+
+	// "jardin.hnm" is the ambient garden-view intro movie played right
+	// after the splash screens, before the (not yet implemented) main
+	// menu. playVideo() already no-ops gracefully (with a warning) if the
+	// file is missing, so no separate existence check is needed here.
+	if (!shouldQuit())
+		playVideo("jardin");
+
+	// Placeholder for the real main menu: show the original "accueil"
+	// (welcome) screen and wait for input.
+	if (!shouldQuit())
+		showAccueil();
 
 	return Common::kNoError;
 }
@@ -134,6 +150,134 @@ void VangoghEngine::showSplashImage(const Common::String &name, uint32 durationM
 	_screen->update();
 
 	waitMillis(durationMs);
+}
+
+void VangoghEngine::playVideo(const Common::String &name) {
+	const Common::Path hnmPath(Common::String::format("movies/%s.hnm", name.c_str()));
+
+	// HNM6 has no palette of its own; the codec draws via the given
+	// PixelFormat's RGBToColor(), so matching the screen format (rather
+	// than the header's informational bpp=16 field) is all that's needed.
+	// Embedded APC audio, if any, is entirely handled by HNMDecoder's own
+	// APCAudioTrack once setSoundType()/loadFile()/start() are called, in
+	// that order -- mirrors engines/cryomni3d CryOmni3DEngine::playHNM().
+	Video::VideoDecoder *videoDecoder = new Video::HNMDecoder(g_system->getScreenFormat(),
+		/*loop=*/false, /*initialPalette=*/nullptr);
+	videoDecoder->setSoundType(Audio::Mixer::kMusicSoundType);
+
+	if (!videoDecoder->loadFile(hnmPath)) {
+		warning("Vangogh: could not open movie %s", hnmPath.toString().c_str());
+		delete videoDecoder;
+		return;
+	}
+
+	videoDecoder->start();
+
+	const uint16 width = videoDecoder->getWidth();
+	const uint16 height = videoDecoder->getHeight();
+
+	bool skipped = false;
+	while (!shouldQuit() && !videoDecoder->endOfVideo() && !skipped) {
+		if (videoDecoder->needsUpdate()) {
+			const Graphics::Surface *frame = videoDecoder->decodeNextFrame();
+			if (frame)
+				g_system->copyRectToScreen(frame->getPixels(), frame->pitch, 0, 0, width, height);
+		}
+
+		g_system->updateScreen();
+		g_system->delayMillis(10);
+
+		Common::Event event;
+		while (g_system->getEventManager()->pollEvent(event)) {
+			switch (event.type) {
+			case Common::EVENT_QUIT:
+			case Common::EVENT_RETURN_TO_LAUNCHER:
+			case Common::EVENT_KEYDOWN:
+			case Common::EVENT_LBUTTONDOWN:
+			case Common::EVENT_RBUTTONDOWN:
+				skipped = true;
+				break;
+			default:
+				break;
+			}
+		}
+	}
+
+	debug("Vangogh: movie '%s' decoded %d/%u frames%s", name.c_str(),
+		videoDecoder->getCurFrame() + 1, videoDecoder->getFrameCount(),
+		skipped ? " (skipped)" : "");
+
+	delete videoDecoder;
+}
+
+void VangoghEngine::showTGPImage(const Common::String &name, uint32 durationMs) {
+	const Common::Path tgpPath(Common::String::format("gfx/%s.TGP", name.c_str()));
+
+	Common::File tgpFile;
+	if (!tgpFile.open(tgpPath)) {
+		warning("Vangogh: could not open TGP image %s", tgpPath.toString().c_str());
+		return;
+	}
+
+	TGPDecoder decoder;
+	if (!decoder.loadStream(tgpFile)) {
+		warning("Vangogh: failed to decode TGP image %s", tgpPath.toString().c_str());
+		return;
+	}
+
+	const Graphics::Surface *surface = decoder.getSurface();
+	debug("Vangogh: showing TGP '%s' (%dx%d) for %u ms", name.c_str(), surface->w, surface->h, durationMs);
+
+	const Common::Point dest((_screen->w - surface->w) / 2, (_screen->h - surface->h) / 2);
+	_screen->blitFrom(*surface, dest);
+	_screen->update();
+
+	waitMillis(durationMs);
+}
+
+void VangoghEngine::showAccueil() {
+	const Common::Path bmpPath("local/accueil.bmp");
+
+	Common::File bmpFile;
+	if (!bmpFile.open(bmpPath)) {
+		warning("Vangogh: could not open menu placeholder %s", bmpPath.toString().c_str());
+		return;
+	}
+
+	Image::BitmapDecoder decoder;
+	if (!decoder.loadStream(bmpFile)) {
+		warning("Vangogh: failed to decode menu placeholder %s", bmpPath.toString().c_str());
+		return;
+	}
+
+	debug("Vangogh: showing accueil.bmp menu placeholder (waiting for input)");
+
+	const Graphics::Surface *surface = decoder.getSurface();
+	const Common::Point dest((_screen->w - surface->w) / 2, (_screen->h - surface->h) / 2);
+	_screen->blitFrom(*surface, dest);
+	_screen->update();
+
+	// Real menu interactivity is out of scope here: just wait for a
+	// keypress/click (or quit) instead of waitMillis()'s fixed duration.
+	bool pressed = false;
+	while (!shouldQuit() && !pressed) {
+		Common::Event event;
+		while (g_system->getEventManager()->pollEvent(event)) {
+			switch (event.type) {
+			case Common::EVENT_QUIT:
+			case Common::EVENT_RETURN_TO_LAUNCHER:
+			case Common::EVENT_KEYDOWN:
+			case Common::EVENT_LBUTTONDOWN:
+			case Common::EVENT_RBUTTONDOWN:
+				pressed = true;
+				break;
+			default:
+				break;
+			}
+		}
+		g_system->updateScreen();
+		g_system->delayMillis(10);
+	}
 }
 
 void VangoghEngine::waitMillis(uint32 ms) {

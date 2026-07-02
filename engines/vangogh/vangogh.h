@@ -56,6 +56,14 @@ private:
 	void showSplashImage(const Common::String &name, uint32 durationMs);
 
 	/**
+	 * Loads data/local/accueil.bmp, centers it on screen, and waits for a
+	 * keypress/click (or quit) before returning. Menu placeholder shown
+	 * after the intro sequence and the ambient "jardin" movie, pending a
+	 * real main menu implementation.
+	 */
+	void showAccueil();
+
+	/**
 	 * Waits for up to the given number of milliseconds, remaining
 	 * responsive to quit/return-to-launcher requests.
 	 */
@@ -75,6 +83,21 @@ public:
 	 * Returns the game Id
 	 */
 	Common::String getGameId() const;
+
+	/**
+	 * Plays an HNM6 movie from data/movies/<name>.hnm to completion (or
+	 * until skipped via any keypress/click, or the engine is asked to
+	 * quit). Embedded APC audio, if any, is handled automatically by
+	 * Video::HNMDecoder. See hnm-apc-compat.md in the reversing notes for
+	 * why this needs no engine-specific decoding work.
+	 */
+	void playVideo(const Common::String &name);
+
+	/**
+	 * Decodes an 'a'-type TGP image from data/gfx/<name>.TGP, centers it on
+	 * screen and shows it for the given duration (or until quit).
+	 */
+	void showTGPImage(const Common::String &name, uint32 durationMs);
 
 	/**
 	 * Gets a random number

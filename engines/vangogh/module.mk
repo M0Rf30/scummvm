@@ -3,6 +3,8 @@ MODULE := engines/vangogh
 MODULE_OBJS = \
 	vangogh.o \
 	console.o \
+	lzss.o \
+	tgp.o \
 	metaengine.o
 
 # This module can be built as a plugin
