@@ -6,6 +6,10 @@ MODULE_OBJS = \
 	lzss.o \
 	tgp.o \
 	spr.o \
+	bfg.o \
+	box3di.o \
+	hnmplayer.o \
+	scene.o \
 	metaengine.o
 
 # This module can be built as a plugin

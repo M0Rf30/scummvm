@@ -29,6 +29,7 @@ Console::Console() : GUI::Debugger() {
 	registerCmd("playhnm",  WRAP_METHOD(Console, Cmd_playHNM));
 	registerCmd("showtgp",  WRAP_METHOD(Console, Cmd_showTGP));
 	registerCmd("showspr",  WRAP_METHOD(Console, Cmd_showSPR));
+	registerCmd("scene",    WRAP_METHOD(Console, Cmd_scene));
 }
 
 Console::~Console() {
@@ -70,6 +71,17 @@ bool Console::Cmd_showSPR(int argc, const char **argv) {
 
 	const uint32 cellIndex = (argc == 3) ? (uint32)atoi(argv[2]) : 0;
 	g_engine->showSPRCell(argv[1], cellIndex, 5000);
+	return true;
+}
+
+bool Console::Cmd_scene(int argc, const char **argv) {
+	if (argc != 2) {
+		debugPrintf("Usage: %s <basename>\n", argv[0]);
+		debugPrintf("Enters the scene loop (backdrop + hotspot click logging) for data/scenes_3d/<basename>.bfg, until a key/quit.\n");
+		return true;
+	}
+
+	g_engine->enterScene(argv[1]);
 	return true;
 }
 

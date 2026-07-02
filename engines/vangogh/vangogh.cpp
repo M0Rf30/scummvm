@@ -22,9 +22,10 @@
 #include "vangogh/vangogh.h"
 #include "vangogh/detection.h"
 #include "vangogh/console.h"
+#include "vangogh/hnmplayer.h"
+#include "vangogh/scene.h"
 #include "vangogh/spr.h"
 #include "vangogh/tgp.h"
-#include "audio/mixer.h"
 #include "common/archive.h"
 #include "common/config-manager.h"
 #include "common/debug.h"
@@ -36,7 +37,6 @@
 #include "graphics/surface.h"
 #include "image/bmp.h"
 #include "image/tga.h"
-#include "video/hnm_decoder.h"
 
 namespace Vangogh {
 
@@ -90,6 +90,14 @@ Common::Error VangoghEngine::run() {
 	// (welcome) screen and wait for input.
 	if (!shouldQuit())
 		showAccueil();
+
+	// Vertical-slice demo: after the (placeholder) main menu, drop
+	// directly into the first real playable scene rather than returning
+	// to an empty screen. "jardin" plays two independent roles here: the
+	// ambient pre-menu movie above, and (separately) the scenes_3d/*.bfg-
+	// backed Scene below -- nothing is shared between the two calls.
+	if (!shouldQuit())
+		enterScene("jardin");
 
 	return Common::kNoError;
 }
@@ -156,31 +164,17 @@ void VangoghEngine::showSplashImage(const Common::String &name, uint32 durationM
 void VangoghEngine::playVideo(const Common::String &name) {
 	const Common::Path hnmPath(Common::String::format("movies/%s.hnm", name.c_str()));
 
-	// HNM6 has no palette of its own; the codec draws via the given
-	// PixelFormat's RGBToColor(), so matching the screen format (rather
-	// than the header's informational bpp=16 field) is all that's needed.
-	// Embedded APC audio, if any, is entirely handled by HNMDecoder's own
-	// APCAudioTrack once setSoundType()/loadFile()/start() are called, in
-	// that order -- mirrors engines/cryomni3d CryOmni3DEngine::playHNM().
-	Video::VideoDecoder *videoDecoder = new Video::HNMDecoder(g_system->getScreenFormat(),
-		/*loop=*/false, /*initialPalette=*/nullptr);
-	videoDecoder->setSoundType(Audio::Mixer::kMusicSoundType);
-
-	if (!videoDecoder->loadFile(hnmPath)) {
-		warning("Vangogh: could not open movie %s", hnmPath.toString().c_str());
-		delete videoDecoder;
+	HNMPlayer player;
+	if (!player.load(hnmPath, /*loop=*/false))
 		return;
-	}
 
-	videoDecoder->start();
-
-	const uint16 width = videoDecoder->getWidth();
-	const uint16 height = videoDecoder->getHeight();
+	const uint16 width = player.width();
+	const uint16 height = player.height();
 
 	bool skipped = false;
-	while (!shouldQuit() && !videoDecoder->endOfVideo() && !skipped) {
-		if (videoDecoder->needsUpdate()) {
-			const Graphics::Surface *frame = videoDecoder->decodeNextFrame();
+	while (!shouldQuit() && !player.endOfVideo() && !skipped) {
+		if (player.decodeNextFrame()) {
+			const Graphics::Surface *frame = player.currentSurface();
 			if (frame)
 				g_system->copyRectToScreen(frame->getPixels(), frame->pitch, 0, 0, width, height);
 		}
@@ -205,10 +199,8 @@ void VangoghEngine::playVideo(const Common::String &name) {
 	}
 
 	debug("Vangogh: movie '%s' decoded %d/%u frames%s", name.c_str(),
-		videoDecoder->getCurFrame() + 1, videoDecoder->getFrameCount(),
+		player.getCurFrame() + 1, player.getFrameCount(),
 		skipped ? " (skipped)" : "");
-
-	delete videoDecoder;
 }
 
 void VangoghEngine::showTGPImage(const Common::String &name, uint32 durationMs) {
@@ -293,6 +285,12 @@ void VangoghEngine::showSPRCell(const Common::String &name, uint32 cellIndex, ui
 	waitMillis(durationMs);
 }
 
+void VangoghEngine::enterScene(const Common::String &name) {
+	Scene scene(name);
+	if (scene.load())
+		scene.run();
+}
+
 void VangoghEngine::showAccueil() {
 	const Common::Path bmpPath("local/accueil.bmp");
 
@@ -314,6 +312,16 @@ void VangoghEngine::showAccueil() {
 	const Common::Point dest((_screen->w - surface->w) / 2, (_screen->h - surface->h) / 2);
 	_screen->blitFrom(*surface, dest);
 	_screen->update();
+
+	// Automated/headless runs (e.g. `--boot-param=1`, used for CI smoke
+	// tests under SDL_VIDEODRIVER=dummy where no real input device
+	// exists) skip the wait and advance immediately, exactly as if the
+	// player had clicked -- see VangoghEngine::run()'s boot-flow comment
+	// for the vertical-slice demo this unlocks.
+	if (ConfMan.hasKey("boot_param")) {
+		debug("Vangogh: boot_param set, advancing past accueil immediately");
+		return;
+	}
 
 	// Real menu interactivity is out of scope here: just wait for a
 	// keypress/click (or quit) instead of waitMillis()'s fixed duration.
