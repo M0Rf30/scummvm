@@ -100,6 +100,16 @@ public:
 	void showTGPImage(const Common::String &name, uint32 durationMs);
 
 	/**
+	 * Decodes cell @p cellIndex of an SPR sprite from
+	 * data/sprites/<name>.spr, centers it on screen and shows it for the
+	 * given duration (or until quit). Codec-C compressed cells are blitted
+	 * with a transparent color key so skipped pixels show whatever is
+	 * already on screen; raw cells have no transparency and are blitted
+	 * fully opaque. See spr.h for the on-disk format.
+	 */
+	void showSPRCell(const Common::String &name, uint32 cellIndex, uint32 durationMs);
+
+	/**
 	 * Gets a random number
 	 */
 	uint32 getRandomNumber(uint maxNum) {

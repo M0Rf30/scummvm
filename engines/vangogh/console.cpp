@@ -28,6 +28,7 @@ Console::Console() : GUI::Debugger() {
 	registerCmd("test",     WRAP_METHOD(Console, Cmd_test));
 	registerCmd("playhnm",  WRAP_METHOD(Console, Cmd_playHNM));
 	registerCmd("showtgp",  WRAP_METHOD(Console, Cmd_showTGP));
+	registerCmd("showspr",  WRAP_METHOD(Console, Cmd_showSPR));
 }
 
 Console::~Console() {
@@ -57,6 +58,18 @@ bool Console::Cmd_showTGP(int argc, const char **argv) {
 	}
 
 	g_engine->showTGPImage(argv[1], 5000);
+	return true;
+}
+
+bool Console::Cmd_showSPR(int argc, const char **argv) {
+	if (argc != 2 && argc != 3) {
+		debugPrintf("Usage: %s <basename> [cellIndex]\n", argv[0]);
+		debugPrintf("Decodes and shows cell [cellIndex] (default 0) of data/sprites/<basename>.spr for 5 seconds.\n");
+		return true;
+	}
+
+	const uint32 cellIndex = (argc == 3) ? (uint32)atoi(argv[2]) : 0;
+	g_engine->showSPRCell(argv[1], cellIndex, 5000);
 	return true;
 }
 

@@ -5,6 +5,7 @@ MODULE_OBJS = \
 	console.o \
 	lzss.o \
 	tgp.o \
+	spr.o \
 	metaengine.o
 
 # This module can be built as a plugin
