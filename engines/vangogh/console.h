@@ -36,6 +36,9 @@ private:
 
 	/** `showtgp <basename>` - decodes and blits data/gfx/<basename>.TGP for 5s. */
 	bool Cmd_showTGP(int argc, const char **argv);
+
+	/** `showspr <basename> [cellIndex]` - decodes and blits cell [cellIndex] (default 0) of data/sprites/<basename>.spr for 5s. */
+	bool Cmd_showSPR(int argc, const char **argv);
 public:
 	Console();
 	~Console() override;

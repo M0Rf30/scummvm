@@ -22,6 +22,7 @@
 #include "vangogh/vangogh.h"
 #include "vangogh/detection.h"
 #include "vangogh/console.h"
+#include "vangogh/spr.h"
 #include "vangogh/tgp.h"
 #include "audio/mixer.h"
 #include "common/archive.h"
@@ -231,6 +232,63 @@ void VangoghEngine::showTGPImage(const Common::String &name, uint32 durationMs) 
 	const Common::Point dest((_screen->w - surface->w) / 2, (_screen->h - surface->h) / 2);
 	_screen->blitFrom(*surface, dest);
 	_screen->update();
+
+	waitMillis(durationMs);
+}
+
+void VangoghEngine::showSPRCell(const Common::String &name, uint32 cellIndex, uint32 durationMs) {
+	const Common::Path sprPath(Common::String::format("sprites/%s.spr", name.c_str()));
+
+	Common::File sprFile;
+	if (!sprFile.open(sprPath)) {
+		warning("Vangogh: could not open SPR sprite %s", sprPath.toString().c_str());
+		return;
+	}
+
+	SPRFile spr;
+	if (!spr.load(sprFile)) {
+		warning("Vangogh: failed to parse SPR sprite %s", sprPath.toString().c_str());
+		return;
+	}
+
+	if (cellIndex >= spr.numCells()) {
+		warning("Vangogh: SPR '%s' has %u cell(s), index %u is out of range", name.c_str(), spr.numCells(), cellIndex);
+		return;
+	}
+
+	if (spr.isCompressed() && !spr.hasPalette()) {
+		warning("Vangogh: SPR '%s' is Codec-C compressed but carries no palette, cannot decode", name.c_str());
+		return;
+	}
+
+	Graphics::Surface *cell = spr.decodeCell(cellIndex);
+	if (!cell)
+		return; // decodeCell() already logged a warning().
+
+	if (cell->w == 0 || cell->h == 0) {
+		debug("Vangogh: SPR '%s' cell %u is an empty placeholder (0x0), nothing to show", name.c_str(), cellIndex);
+		cell->free();
+		delete cell;
+		return;
+	}
+
+	debug("Vangogh: showing SPR '%s' cell %u (%dx%d, %s%s) for %u ms", name.c_str(), cellIndex, cell->w, cell->h,
+		spr.hasPalette() ? "CLUT8" : "RGB565", spr.isCompressed() ? ", transparent" : ", opaque", durationMs);
+
+	const Common::Point dest((_screen->w - cell->w) / 2, (_screen->h - cell->h) / 2);
+	if (spr.isCompressed()) {
+		// Codec-C cells: blit with the color key its transparent-skip
+		// opcode decodes to, so skipped pixels leave the screen untouched.
+		_screen->transBlitFrom(*cell, dest, SPRFile::kTransparentColor, false, 0xff, &spr.getPalette());
+	} else if (spr.hasPalette()) {
+		_screen->blitFrom(*cell, dest, &spr.getPalette());
+	} else {
+		_screen->blitFrom(*cell, dest);
+	}
+	_screen->update();
+
+	cell->free();
+	delete cell;
 
 	waitMillis(durationMs);
 }
