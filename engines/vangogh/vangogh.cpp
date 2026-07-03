@@ -31,8 +31,10 @@
 #include "common/debug.h"
 #include "common/events.h"
 #include "common/file.h"
+#include "common/rect.h"
 #include "common/system.h"
 #include "common/textconsole.h"
+#include "common/util.h"
 #include "engines/util.h"
 #include "graphics/surface.h"
 #include "image/bmp.h"
@@ -79,25 +81,24 @@ Common::Error VangoghEngine::run() {
 
 	showIntro();
 
-	// "jardin.hnm" is the ambient garden-view intro movie played right
-	// after the splash screens, before the (not yet implemented) main
-	// menu. playVideo() already no-ops gracefully (with a warning) if the
-	// file is missing, so no separate existence check is needed here.
+	// Real intro cutscene (data/movies/intro.hnm, scene-flow.md sec.1.5:
+	// "playMovie(hwndMain, 'intro')") -- playVideo() already no-ops
+	// gracefully (with a warning) if the file is missing.
 	if (!shouldQuit())
-		playVideo("jardin");
+		playVideo("intro");
 
-	// Placeholder for the real main menu: show the original "accueil"
-	// (welcome) screen and wait for input.
+	// Approximated main menu (accueil.bmp + clickable BUTTON regions --
+	// see showAccueil()). A Start click (or Enter, or boot_param) begins
+	// a new game; Quit (or Escape, or closing the window) does not.
+	bool startGame = true;
 	if (!shouldQuit())
-		showAccueil();
+		startGame = showAccueil();
 
-	// Vertical-slice demo: after the (placeholder) main menu, drop
-	// directly into the first real playable scene rather than returning
-	// to an empty screen. "jardin" plays two independent roles here: the
-	// ambient pre-menu movie above, and (separately) the scenes_3d/*.bfg-
-	// backed Scene below -- nothing is shared between the two calls.
-	if (!shouldQuit())
-		enterScene("jardin");
+	// New-game entry point is always musee (scene 0, scene-flow.md
+	// sec.1.5/sec.0.6); runGame() drives every subsequent hotspot-click
+	// transition across the recovered navigation graph (navgraph.h).
+	if (!shouldQuit() && startGame)
+		runGame();
 
 	return Common::kNoError;
 }
@@ -285,57 +286,139 @@ void VangoghEngine::showSPRCell(const Common::String &name, uint32 cellIndex, ui
 	waitMillis(durationMs);
 }
 
-void VangoghEngine::enterScene(const Common::String &name) {
+NavAction VangoghEngine::enterScene(const Common::String &name, bool simulateClick) {
 	Scene scene(name);
-	if (scene.load())
-		scene.run();
+	if (!scene.load()) {
+		warning("Vangogh: enterScene('%s'): nothing to show (no backdrop, no hotspot boxes, no nav edges)", name.c_str());
+		_lastSceneName = name;
+		_lastHotspots.clear();
+		return NavAction();
+	}
+
+	scene.run(simulateClick);
+
+	_lastSceneName = name;
+	_lastHotspots = scene.projectedHotspots();
+	return scene.resolvedAction();
 }
 
-void VangoghEngine::showAccueil() {
+void VangoghEngine::runGame() {
+	Common::String current = sceneNameForId(kSceneMusee);
+
+	// Headless/automated runs (--boot-param=1) have no real input device;
+	// simulate exactly ONE hotspot click (in whichever scene visit needs
+	// it first) to demonstrate a real transition end-to-end, then let the
+	// chain end naturally (the next scene's own auto-advance timeout,
+	// Scene::run()'s existing boot_param handling) instead of cascading
+	// through the whole 23-edge graph unattended.
+	int simulateHopsRemaining = ConfMan.hasKey("boot_param") ? 1 : 0;
+
+	while (!shouldQuit()) {
+		const NavAction action = enterScene(current, simulateHopsRemaining > 0);
+
+		if (action.kind == NavAction::kQuit) {
+			quitGame();
+			break;
+		}
+		if (action.kind == NavAction::kNone || action.kind == NavAction::kLocal)
+			break; // nothing left to do: window closed, Escape pressed, or (shouldn't happen -- Scene::run() only
+			       // returns on a leaving action or no action) a stray local-only result.
+
+		if (simulateHopsRemaining > 0)
+			simulateHopsRemaining--;
+
+		current = (action.kind == NavAction::kHub) ? sceneNameForId(kSceneMusee) : action.targetScene;
+	}
+
+	debug("Vangogh: navigation loop ended (last scene '%s')", current.c_str());
+}
+
+bool VangoghEngine::showAccueil() {
 	const Common::Path bmpPath("local/accueil.bmp");
 
 	Common::File bmpFile;
 	if (!bmpFile.open(bmpPath)) {
-		warning("Vangogh: could not open menu placeholder %s", bmpPath.toString().c_str());
-		return;
+		warning("Vangogh: could not open menu background %s -- starting the game directly", bmpPath.toString().c_str());
+		return true;
 	}
 
 	Image::BitmapDecoder decoder;
 	if (!decoder.loadStream(bmpFile)) {
-		warning("Vangogh: failed to decode menu placeholder %s", bmpPath.toString().c_str());
-		return;
+		warning("Vangogh: failed to decode menu background %s -- starting the game directly", bmpPath.toString().c_str());
+		return true;
 	}
 
-	debug("Vangogh: showing accueil.bmp menu placeholder (waiting for input)");
+	// Reversed Win32 BUTTON rects, assuming a 640x480 surface with
+	// baseX=baseY=0 (scene-flow.md sec.1.3). Only "Go"/start and "Quit"
+	// are wired to an action; the player-name EDIT control and the
+	// save-slot rows are non-goals here (no save/load) -- slots are kept
+	// as logged no-ops rather than silently invisible/dead.
+	const Common::Rect kStartButton(407, 396, 443, 419);
+	const Common::Rect kQuitButton(468, 396, 540, 423);
+	const Common::Rect kPlayerSlots[5] = {
+		Common::Rect(90, 217, 252, 244),
+		Common::Rect(90, 251, 252, 278),
+		Common::Rect(90, 285, 252, 312),
+		Common::Rect(90, 319, 252, 346),
+		Common::Rect(90, 353, 252, 380),
+	};
+
+	debug("Vangogh: showing accueil.bmp menu (click/Enter Start to begin, Quit/Escape to exit)");
 
 	const Graphics::Surface *surface = decoder.getSurface();
 	const Common::Point dest((_screen->w - surface->w) / 2, (_screen->h - surface->h) / 2);
 	_screen->blitFrom(*surface, dest);
+	// Subtle visual affordance for the two wired buttons -- accueil.bmp's
+	// own BOUTONS.BMP-drawn button faces aren't reproduced here (out of
+	// this milestone's scope), just enough of an outline that the
+	// approximation isn't a fully invisible click target.
+	_screen->frameRect(kStartButton, _screen->format.RGBToColor(255, 255, 255));
+	_screen->frameRect(kQuitButton, _screen->format.RGBToColor(255, 255, 255));
 	_screen->update();
 
 	// Automated/headless runs (e.g. `--boot-param=1`, used for CI smoke
 	// tests under SDL_VIDEODRIVER=dummy where no real input device
-	// exists) skip the wait and advance immediately, exactly as if the
-	// player had clicked -- see VangoghEngine::run()'s boot-flow comment
-	// for the vertical-slice demo this unlocks.
+	// exists) skip the wait and advance immediately, exactly as if
+	// "Start" had been clicked.
 	if (ConfMan.hasKey("boot_param")) {
 		debug("Vangogh: boot_param set, advancing past accueil immediately");
-		return;
+		return true;
 	}
 
-	// Real menu interactivity is out of scope here: just wait for a
-	// keypress/click (or quit) instead of waitMillis()'s fixed duration.
-	bool pressed = false;
-	while (!shouldQuit() && !pressed) {
+	while (!shouldQuit()) {
 		Common::Event event;
 		while (g_system->getEventManager()->pollEvent(event)) {
 			switch (event.type) {
 			case Common::EVENT_QUIT:
 			case Common::EVENT_RETURN_TO_LAUNCHER:
-			case Common::EVENT_KEYDOWN:
+				return false;
 			case Common::EVENT_LBUTTONDOWN:
-			case Common::EVENT_RBUTTONDOWN:
-				pressed = true;
+				if (kStartButton.contains(event.mouse)) {
+					debug("Vangogh: accueil: Start clicked");
+					return true;
+				}
+				if (kQuitButton.contains(event.mouse)) {
+					debug("Vangogh: accueil: Quit clicked");
+					return false;
+				}
+				for (uint i = 0; i < ARRAYSIZE(kPlayerSlots); i++) {
+					if (kPlayerSlots[i].contains(event.mouse)) {
+						debug("Vangogh: accueil: player slot %u clicked (save/load not implemented, ignoring)", i);
+						break;
+					}
+				}
+				break;
+			case Common::EVENT_KEYDOWN:
+				// Mirrors the real accueil window's Enter->"Go"/
+				// Escape->"Quit" shortcuts (scene-flow.md sec.1.4).
+				if (event.kbd.keycode == Common::KEYCODE_RETURN) {
+					debug("Vangogh: accueil: Enter pressed (Start)");
+					return true;
+				}
+				if (event.kbd.keycode == Common::KEYCODE_ESCAPE) {
+					debug("Vangogh: accueil: Escape pressed (Quit)");
+					return false;
+				}
 				break;
 			default:
 				break;
@@ -344,6 +427,7 @@ void VangoghEngine::showAccueil() {
 		g_system->updateScreen();
 		g_system->delayMillis(10);
 	}
+	return false; // shouldQuit() became true some other way (e.g. return-to-launcher).
 }
 
 void VangoghEngine::waitMillis(uint32 ms) {

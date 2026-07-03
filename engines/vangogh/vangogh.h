@@ -34,6 +34,8 @@
 #include "graphics/screen.h"
 
 #include "vangogh/detection.h"
+#include "vangogh/navgraph.h"
+#include "vangogh/scene.h"
 
 namespace Vangogh {
 
@@ -56,18 +58,39 @@ private:
 	void showSplashImage(const Common::String &name, uint32 durationMs);
 
 	/**
-	 * Loads data/local/accueil.bmp, centers it on screen, and waits for a
-	 * keypress/click (or quit) before returning. Menu placeholder shown
-	 * after the intro sequence and the ambient "jardin" movie, pending a
-	 * real main menu implementation.
+	 * Loads data/local/accueil.bmp, centers it on screen, and runs the
+	 * approximated Win32 menu (scene-flow.md sec.1.3's reversed BUTTON
+	 * rects): a "Go"/start click (or Enter) begins a new game, a "Quit"
+	 * click (or Escape) exits. The player-name EDIT control and the
+	 * save-slot rows are visual-only/logged no-ops (no save/load in this
+	 * milestone). Returns true if the game should start, false if the
+	 * player chose to quit (or the window was closed) here. Automated/
+	 * headless runs (ConfMan "boot_param") skip the wait and return true
+	 * immediately, exactly as if Start had been clicked.
 	 */
-	void showAccueil();
+	bool showAccueil();
+
+	/**
+	 * The post-menu navigation loop: starts at musee (scene 0 -- new
+	 * games always start at the museum, scene-flow.md sec.1.5/sec.0.6)
+	 * and repeatedly calls enterScene(), following whatever transition/
+	 * hub/quit action each visit resolves (navgraph.h's NavAction), until
+	 * quit, the window closes, or a visit resolves no action at all.
+	 * Under automated/headless runs (ConfMan "boot_param"), only the
+	 * FIRST visit simulates a hotspot click (see Scene::run()); every
+	 * scene reached that way still fully loads/projects/plays out, but
+	 * the chain stops growing after that one real transition.
+	 */
+	void runGame();
 
 	/**
 	 * Waits for up to the given number of milliseconds, remaining
 	 * responsive to quit/return-to-launcher requests.
 	 */
 	void waitMillis(uint32 ms);
+
+	Common::String _lastSceneName;
+	Common::Array<Scene::ProjectedHotspot> _lastHotspots;
 protected:
 	// Engine APIs
 	Common::Error run() override;
@@ -113,11 +136,20 @@ public:
 
 	/**
 	 * Enters the scene loop for data/scenes_3d/<name>.bfg + its HNM
-	 * backdrop -- see Scene::load()/Scene::run(). Used by both the
-	 * boot-flow vertical-slice demo (run()) and the `scene <name>`
-	 * console command.
+	 * backdrops -- see Scene::load()/Scene::run(). Used by both
+	 * runGame()'s navigation loop and the `scene <name>` console command.
+	 * @p simulateClick forwards to Scene::run() (see its doc comment).
+	 * Caches the visited scene's name and projected hotspots (see
+	 * lastSceneName()/lastSceneHotspots(), used by the `hotspots` console
+	 * command) and returns whatever action the scene resolved.
 	 */
-	void enterScene(const Common::String &name);
+	NavAction enterScene(const Common::String &name, bool simulateClick = false);
+
+	/** Name of the most recently entered scene (via enterScene()), or empty if none yet. */
+	const Common::String &lastSceneName() const { return _lastSceneName; }
+
+	/** The most recently entered scene's projectedHotspots() snapshot -- see the `hotspots` console command. */
+	const Common::Array<Scene::ProjectedHotspot> &lastSceneHotspots() const { return _lastHotspots; }
 
 	/**
 	 * Gets a random number

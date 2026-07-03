@@ -190,35 +190,170 @@ bool tryBoxAt(const int32 *arr, uint32 start, int tol, HotspotBox &out) {
 	return false;
 }
 
+// --------------------------------------------------------------------------
+// Camera/projection math -- field-for-field port of scene_hotspots.py's
+// bam_to_rad()/_rot_x()/_rot_y()/_matmul()/_matvec()/project().
+// --------------------------------------------------------------------------
+inline double bamToRadians(int32 v) {
+	return ((v & 0xFFF) / 4096.0) * 2.0 * M_PI;
+}
+
+typedef double Mat3[3][3];
+
+void rotX(double a, Mat3 out) {
+	const double c = cos(a), s = sin(a);
+	out[0][0] = 1; out[0][1] = 0; out[0][2] = 0;
+	out[1][0] = 0; out[1][1] = c; out[1][2] = -s;
+	out[2][0] = 0; out[2][1] = s; out[2][2] = c;
+}
+
+void rotY(double a, Mat3 out) {
+	const double c = cos(a), s = sin(a);
+	out[0][0] = c;  out[0][1] = 0; out[0][2] = s;
+	out[1][0] = 0;  out[1][1] = 1; out[1][2] = 0;
+	out[2][0] = -s; out[2][1] = 0; out[2][2] = c;
+}
+
+void matMul(const Mat3 a, const Mat3 b, Mat3 out) {
+	for (int i = 0; i < 3; i++) {
+		for (int j = 0; j < 3; j++) {
+			double sum = 0.0;
+			for (int k = 0; k < 3; k++)
+				sum += a[i][k] * b[k][j];
+			out[i][j] = sum;
+		}
+	}
+}
+
+void matVec3(const Mat3 m, const double v[3], double out[3]) {
+	for (int i = 0; i < 3; i++)
+		out[i] = m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2];
+}
+
+struct NamedCameraPose {
+	const char *name;
+	CameraPose pose;
+};
+
+// Literal per-scene default camera poses transcribed from PEINTRE.exe's
+// fcn.00427600 (scene-flow.md sec.3.3/sec.6 -- the "default" fallback pose
+// per destination scene, NOT the per-from/to-edge override poses also
+// present in that function). Field-for-field copy of scene_hotspots.py's
+// CAMERA_POSES table. 12 of 14 scenes recovered; auberge/hopiext are
+// deliberately absent -- see cameraPoseForScene()'s doc comment.
+const NamedCameraPose kCameraPoses[] = {
+	{ "musee",     { 4524,  -297, 4758, 4006, 1791 } },
+	{ "maisonet",  { 1149,   141,-1491,    0,  275 } },
+	{ "mangeurs",  { -106,     6,  100, 3946,  145 } },
+	{ "cafe",      {  393,  -175, -136, 3976,   92 } },
+	{ "chambreb",  { -628,  -336, -268, 3946,  150 } },
+	{ "maisonj",   {-3350,   489,-5996,   60, 3944 } },
+	{ "hopiint",   {  -67,   -78, -345, 4036,   17 } },
+	{ "pont",      { 7805,  1167, 2183,   30, 3265 } },
+	{ "terrasse",  { -123,  -102, -846, 4066,   31 } },
+	{ "jardin",    {  -46,  -335, 1263,    0, 4052 } },
+	{ "champ",     { 2140,   253, 2270, 4006,  214 } },
+	{ "eglise",    {-7189,   802,  102,  210, 3756 } },
+};
+
 } // end of anonymous namespace
 
-Common::Rect HotspotBox::projectToScreen() const {
-	// TODO(SceneFlowRE): see the struct comment in box3di.h -- placeholder
-	// orthographic projection only, arbitrary scale+offset, not the real
-	// camera model.
-	const double kPixelsPerMm = 1.0 / 8.0;
-	const double originX = 320.0;
-	const double originY = 240.0;
+const ZoomViewport kZoomViewports[4] = {
+	{ 640, 480,   0,   0 },
+	{ 512, 384,  64,  48 },
+	{ 400, 300, 120,  90 },
+	{ 320, 240, 160, 120 },
+};
 
-	double minU = vertices[0][otherAxes[0]];
-	double maxU = minU;
-	double minV = vertices[0][otherAxes[1]];
-	double maxV = minV;
-	for (int k = 1; k < 4; k++) {
-		const double u = vertices[k][otherAxes[0]];
-		const double v = vertices[k][otherAxes[1]];
-		minU = MIN(minU, u);
-		maxU = MAX(maxU, u);
-		minV = MIN(minV, v);
-		maxV = MAX(maxV, v);
+bool cameraPoseForScene(const Common::String &sceneName, CameraPose &out) {
+	// chambreb/chambrev are the day/night variant pair for scene enum id
+	// 6 (scene-load-findings.md sec.1); only one literal pose was
+	// recovered and nothing suggests the two variants differ, so
+	// chambrev shares chambreb's.
+	const Common::String lookupName = sceneName.equalsIgnoreCase("chambrev") ? Common::String("chambreb") : sceneName;
+
+	for (uint i = 0; i < ARRAYSIZE(kCameraPoses); i++) {
+		if (lookupName.equalsIgnoreCase(kCameraPoses[i].name)) {
+			out = kCameraPoses[i].pose;
+			return true;
+		}
 	}
 
-	const int32 left = CLIP<int32>((int32)(originX + minU * kPixelsPerMm), -32768, 32767);
-	const int32 right = CLIP<int32>((int32)(originX + maxU * kPixelsPerMm), left + 1, 32767);
-	const int32 top = CLIP<int32>((int32)(originY + minV * kPixelsPerMm), -32768, 32767);
-	const int32 bottom = CLIP<int32>((int32)(originY + maxV * kPixelsPerMm), top + 1, 32767);
+	// auberge/hopiext: no literal recovered (see this function's doc
+	// comment in box3di.h). Documented fallback: an identity camera at
+	// the world origin -- deliberately NOT a guess at the real pose.
+	out = CameraPose();
+	return false;
+}
 
-	return Common::Rect((int16)left, (int16)top, (int16)right, (int16)bottom);
+bool projectPoint(const double world[3], const CameraPose &camera, int zoomLevel, double &outX, double &outY, double &outDepth) {
+	assert(zoomLevel >= 0 && zoomLevel < 4);
+
+	Mat3 rx, ry, r;
+	rotX(bamToRadians(camera.rotPitchBam), rx);
+	rotY(bamToRadians(camera.rotYawBam), ry);
+	matMul(rx, ry, r); // R = Rx(pitch) * Ry(yaw) -- applying R to a vector rotates by yaw first, then pitch.
+
+	const double rel[3] = {
+		world[0] - camera.x,
+		world[1] - camera.y,
+		world[2] - camera.z,
+	};
+	double cam[3];
+	matVec3(r, rel, cam);
+
+	const double zc = cam[2];
+	if (fabs(zc) < 1e-6)
+		return false;
+
+	const ZoomViewport &vp = kZoomViewports[zoomLevel];
+	const double cx = vp.width / 2.0 + vp.offsetX;
+	const double cy = vp.height / 2.0 + vp.offsetY;
+	const double scaleX = kCameraFocalLength;
+	const double scaleY = scaleX * ((double)vp.height / (double)vp.width);
+
+	outX = cx + scaleX * cam[0] / zc;
+	outY = cy + scaleY * cam[1] / zc;
+	outDepth = zc;
+	return true;
+}
+
+bool HotspotBox::projectToScreen(const CameraPose &camera, int zoomLevel, Common::Rect &outRect, double &outNearestDepth) const {
+	bool any = false;
+	double minX = 0.0, maxX = 0.0, minY = 0.0, maxY = 0.0, nearestZ = 0.0;
+
+	for (int k = 0; k < 8; k++) {
+		double sx, sy, sz;
+		if (!projectPoint(vertices[k], camera, zoomLevel, sx, sy, sz))
+			continue; // degenerate (on the camera plane) -- skip, like Python's `None`.
+		if (sz <= 0.0)
+			continue; // behind the camera -- dump_scene()'s `in_front` filter.
+
+		if (!any) {
+			minX = maxX = sx;
+			minY = maxY = sy;
+			nearestZ = sz;
+			any = true;
+		} else {
+			minX = MIN(minX, sx);
+			maxX = MAX(maxX, sx);
+			minY = MIN(minY, sy);
+			maxY = MAX(maxY, sy);
+			nearestZ = MIN(nearestZ, sz);
+		}
+	}
+
+	if (!any)
+		return false; // entirely behind camera or degenerate -- not visible/pickable at this pose.
+
+	const int32 left = CLIP<int32>((int32)floor(minX), -32768, 32767);
+	const int32 right = CLIP<int32>((int32)ceil(maxX), left + 1, 32767);
+	const int32 top = CLIP<int32>((int32)floor(minY), -32768, 32767);
+	const int32 bottom = CLIP<int32>((int32)ceil(maxY), top + 1, 32767);
+
+	outRect = Common::Rect((int16)left, (int16)top, (int16)right, (int16)bottom);
+	outNearestDepth = nearestZ;
+	return true;
 }
 
 Common::Array<HotspotBox> findOrientedBoxes(const int32 *arr, uint32 count, int tol) {

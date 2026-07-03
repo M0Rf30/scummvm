@@ -40,8 +40,11 @@ private:
 	/** `showspr <basename> [cellIndex]` - decodes and blits cell [cellIndex] (default 0) of data/sprites/<basename>.spr for 5s. */
 	bool Cmd_showSPR(int argc, const char **argv);
 
-	/** `scene <basename>` - enters the scene loop (backdrop + click logging) for data/scenes_3d/<basename>.bfg until a key/quit. */
+	/** `scene <basename>` - enters the scene loop (backdrop + real-camera hotspot projection/click handling) for data/scenes_3d/<basename>.bfg until a key/quit/transition. */
 	bool Cmd_scene(int argc, const char **argv);
+
+	/** `hotspots` - lists the last-entered scene's projected hotspot boxes (screen rect + bound nav target) and its region-based nav edges. */
+	bool Cmd_hotspots(int argc, const char **argv);
 public:
 	Console();
 	~Console() override;
