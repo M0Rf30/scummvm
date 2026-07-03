@@ -40,39 +40,6 @@ namespace Vangogh {
 
 namespace {
 
-// Not every scene's HNM basename matches its scenes_3d container's basename
-// exactly (e.g. the room "chambreb" vs. a differently-abbreviated movie
-// codename) -- untangling that mapping for real is exactly what
-// SceneFlowRE's scene-flow investigation is for. Until that lands, resolve
-// the common case (the movie IS the scene name, optionally with a suffix,
-// e.g. "jardin.hnm"/"jardinr.hnm" for scene "jardin") without a hardcoded
-// table: try the exact name first, then fall back to a prefix search.
-Common::Path locateBackdropPath(const Common::String &name) {
-	const Common::Path exactPath(Common::String::format("movies/%s.hnm", name.c_str()));
-	if (Common::File::exists(exactPath))
-		return exactPath;
-
-	Common::ArchiveMemberList matches;
-	SearchMan.listMatchingMembers(matches, Common::Path(Common::String::format("movies/%s*.hnm", name.c_str())));
-	if (matches.empty())
-		return Common::Path();
-
-	// Deterministic pick among multiple matches: shortest file name first
-	// (the "plain" variant, e.g. "jardin.hnm" over "jardinr.hnm"), then
-	// lexicographic.
-	Common::Path best;
-	Common::String bestName;
-	for (const auto &member : matches) {
-		const Common::String candidate = member->getFileName();
-		if (bestName.empty() || candidate.size() < bestName.size() ||
-			(candidate.size() == bestName.size() && candidate < bestName)) {
-			bestName = candidate;
-			best = member->getPathInArchive();
-		}
-	}
-	return best;
-}
-
 const uint kCursorSize = 15;
 
 // No real cursor art has been recovered from the game data (out of scope
@@ -106,22 +73,29 @@ void setPlaceholderCursor() {
 	CursorMan.showMouse(true);
 }
 
+const Common::Rect kScreenRect(0, 0, 640, 480);
+
 } // end of anonymous namespace
 
-Scene::Scene(const Common::String &name) : _name(name), _hasBackdrop(false) {
+Scene::Scene(const Common::String &name) : _name(name), _hasBackdrop(false), _camera(), _hasCameraLiteral(false), _leaveRequested(false) {
 }
 
 Scene::~Scene() {
 }
 
 bool Scene::load() {
-	const Common::Path backdropPath = locateBackdropPath(_name);
-	if (backdropPath.empty()) {
-		warning("Vangogh: scene '%s': no backdrop movie found matching movies/%s*.hnm", _name.c_str(), _name.c_str());
+	const SceneBackdropNames backdropNames = backdropNamesForScene(_name);
+	if (backdropNames.arrival) {
+		_arrivalMovie = backdropNames.arrival;
+		_departureMovie = backdropNames.departure ? Common::String(backdropNames.departure) : Common::String();
+		const Common::Path arrivalPath(Common::String::format("movies/%s.hnm", _arrivalMovie.c_str()));
+		_hasBackdrop = Common::File::exists(arrivalPath);
+		if (!_hasBackdrop)
+			warning("Vangogh: scene '%s': arrival backdrop %s not found", _name.c_str(), arrivalPath.toString().c_str());
 	} else {
-		// Looping: a scene backdrop is ambient, not a one-shot cutscene --
-		// see HNMPlayer::load()/video/hnm_decoder.h.
-		_hasBackdrop = _player.load(backdropPath, /*loop=*/true);
+		// musee/auberge/hopiext genuinely have no backdrop movie at all
+		// (scene-load-findings.md sec.2.2/sec.4) -- not an error.
+		debug("Vangogh: scene '%s': no backdrop movie for this scene", _name.c_str());
 	}
 
 	const Common::Path bfgPath(Common::String::format("scenes_3d/%s.bfg", _name.c_str()));
@@ -139,50 +113,177 @@ bool Scene::load() {
 		}
 	}
 
+	_hasCameraLiteral = cameraPoseForScene(_name, _camera);
+	if (!_hasCameraLiteral)
+		warning("Vangogh: scene '%s': no recovered camera-pose literal, falling back to an identity camera "
+			"(hotspot screen rects for this scene are unreliable)", _name.c_str());
+
+	_edges = navEdgesForScene(_name);
+
 	debug("Vangogh: scene %s: %u hotspot boxes loaded", _name.c_str(), (uint32)_hotspotBoxes.size());
 
-	return _hasBackdrop || !_hotspotBoxes.empty();
+	projectHotspots();
+
+	// Only "nothing at all to show or do" fails load(): a scene can be a
+	// legitimate, navigable node with an empty room (no backdrop, no
+	// decoded boxes -- e.g. hopiext) as long as it still has outgoing nav
+	// edges to click through.
+	return _hasBackdrop || !_hotspotBoxes.empty() || !_edges.empty();
 }
 
-void Scene::handleClick(const Common::Point &pt) const {
-	int hitIndex = -1;
+const NavEdge *Scene::findEdgeForBox(uint32 boxIndex) const {
+	for (const auto &edge : _edges) {
+		if (edge.boxIndex == (int)boxIndex)
+			return &edge;
+	}
+	return nullptr;
+}
+
+void Scene::projectHotspots() {
+	_projected.clear();
+
+	uint32 visibleCount = 0;
+	uint32 onScreenCount = 0;
 	for (const auto &box : _hotspotBoxes) {
-		if (box.containsScreenPoint(pt)) {
-			hitIndex = (int)box.index;
-			break;
+		ProjectedHotspot p;
+		p.boxIndex = box.index;
+		p.visible = box.projectToScreen(_camera, /* zoomLevel = */ 0, p.rect, p.nearestDepth);
+
+		const NavEdge *edge = findEdgeForBox(box.index);
+		if (edge) {
+			p.hasAction = true;
+			p.actionArg = edge->actionArg;
+			p.actionLabel = edge->label;
+		}
+
+		if (p.visible) {
+			visibleCount++;
+			const bool onScreen = p.rect.intersects(kScreenRect);
+			if (onScreen)
+				onScreenCount++;
+			debug("Vangogh: scene '%s': hotspot box #%u screen rect (%d,%d)-(%d,%d) depth=%.0f%s%s",
+				_name.c_str(), p.boxIndex, p.rect.left, p.rect.top, p.rect.right, p.rect.bottom, p.nearestDepth,
+				onScreen ? "" : " (off-screen at this pose)",
+				p.hasAction ? Common::String::format(" %s", p.actionLabel.c_str()).c_str() : " (unbound)");
+		} else {
+			debug("Vangogh: scene '%s': hotspot box #%u entirely behind camera at this pose, not visible/pickable",
+				_name.c_str(), p.boxIndex);
+		}
+
+		_projected.push_back(p);
+	}
+
+	debug("Vangogh: scene '%s': projected %u hotspots (%u in front of camera, %u actually on-screen, zoom level 0, camera %s)",
+		_name.c_str(), (uint32)_hotspotBoxes.size(), visibleCount, onScreenCount, _hasCameraLiteral ? "literal" : "fallback");
+}
+
+void Scene::handleClick(const Common::Point &pt) {
+	// Nearest-depth-wins among every VISIBLE projected box containing pt
+	// (scene-flow.md sec.3.1's "honest point-in-triangle + nearest-depth"
+	// test, simplified to point-in-projected-bbox since that's the
+	// geometry this engine actually has).
+	int hitBoxIndex = -1;
+	double bestDepth = 0.0;
+	const ProjectedHotspot *hit = nullptr;
+	for (const auto &p : _projected) {
+		if (p.visible && p.rect.contains(pt) && (hitBoxIndex < 0 || p.nearestDepth < bestDepth)) {
+			hitBoxIndex = (int)p.boxIndex;
+			bestDepth = p.nearestDepth;
+			hit = &p;
 		}
 	}
 
-	if (hitIndex >= 0)
-		debug("Vangogh: scene '%s': click at (%d,%d) hit hotspot box #%d", _name.c_str(), pt.x, pt.y, hitIndex);
+	if (hit && hit->hasAction) {
+		debug("Vangogh: scene '%s': click at (%d,%d) hit hotspot box #%d '%s'",
+			_name.c_str(), pt.x, pt.y, hitBoxIndex, hit->actionLabel.c_str());
+		commitAction(hit->actionArg);
+		return;
+	}
+
+	// No (bound) box hit -- try maisonj-style raw 2D coordinate-range
+	// regions (scene-flow.md sec.3.2), including scenes that have no
+	// decoded boxes at all.
+	for (const auto &edge : _edges) {
+		if (edge.boxIndex < 0 && edge.region.contains(pt)) {
+			debug("Vangogh: scene '%s': click at (%d,%d) hit region '%s'", _name.c_str(), pt.x, pt.y, edge.label);
+			commitAction(edge.actionArg);
+			return;
+		}
+	}
+
+	if (hitBoxIndex >= 0)
+		debug("Vangogh: scene '%s': click at (%d,%d) hit hotspot box #%d (no bound nav target)", _name.c_str(), pt.x, pt.y, hitBoxIndex);
 	else
-		debug("Vangogh: scene '%s': click at (%d,%d) hit no hotspot box", _name.c_str(), pt.x, pt.y);
+		debug("Vangogh: scene '%s': click at (%d,%d) hit no hotspot/region", _name.c_str(), pt.x, pt.y);
 }
 
-void Scene::run() {
-	// Automated/headless runs (see VangoghEngine::showAccueil()) have no
-	// real input device to ever produce a keypress, so under boot_param
-	// the loop also leaves on its own after a small, fixed number of
-	// ticks -- enough to prove backdrop decoding is actually happening,
-	// for scenes that have one -- rather than waiting forever. Ticks, not
-	// decoded frames: a scene with no backdrop (_hasBackdrop false, see
-	// load()) never decodes a frame at all and must still bound the loop.
-	// Interactive play never sets boot_param.
-	const bool autoAdvance = ConfMan.hasKey("boot_param");
-	const uint32 kAutoAdvanceTicks = 100;
+void Scene::commitAction(int actionArg) {
+	// Mirrors PEINTRE.exe's shared committer, fcn.00432e10 (scene-flow.md
+	// sec.4.1): resolve actionArg, then only a transition/hub/quit result
+	// actually leaves the room.
+	const NavAction action = resolveNavAction(actionArg);
+	switch (action.kind) {
+	case NavAction::kLocal:
+		debug("Vangogh: scene '%s': local action (stub -- no puzzle/save/anim logic implemented), staying in scene", _name.c_str());
+		_resolvedAction = action;
+		break;
+	case NavAction::kTransition:
+		debug("Vangogh: scene '%s': transition -> '%s'", _name.c_str(), action.targetScene.c_str());
+		_resolvedAction = action;
+		_leaveRequested = true;
+		break;
+	case NavAction::kHub:
+		debug("Vangogh: scene '%s': return-to-hub sentinel -> '%s'", _name.c_str(), action.targetScene.c_str());
+		_resolvedAction = action;
+		_leaveRequested = true;
+		break;
+	case NavAction::kQuit:
+		debug("Vangogh: scene '%s': quit requested", _name.c_str());
+		_resolvedAction = action;
+		_leaveRequested = true;
+		break;
+	default:
+		break;
+	}
+}
 
-	setPlaceholderCursor();
+Common::Point Scene::bestSimulatedClickPoint() const {
+	// Prefer a hotspot/region leading to 'jardin' when this scene has one
+	// -- makes the automated boot_param demo deterministically exercise
+	// BOTH of this milestone's own cross-check scenes (musee, jardin) in
+	// a single run. Falls back to the first available, actually-onscreen,
+	// bound hotspot/region otherwise.
+	for (int preferJardin = 1; preferJardin >= 0; preferJardin--) {
+		for (const auto &p : _projected) {
+			if (p.visible && p.hasAction && p.rect.intersects(kScreenRect) &&
+				(!preferJardin || p.actionArg == kSceneJardin))
+				return Common::Point(p.rect.left + p.rect.width() / 2, p.rect.top + p.rect.height() / 2);
+		}
+		for (const auto &edge : _edges) {
+			if (edge.boxIndex < 0 && (!preferJardin || edge.actionArg == kSceneJardin))
+				return Common::Point(edge.region.left + edge.region.width() / 2, edge.region.top + edge.region.height() / 2);
+		}
+	}
+	return Common::Point(-1, -1);
+}
 
-	uint32 framesDecoded = 0;
-	uint32 ticks = 0;
-	bool leave = false;
-	while (!g_engine->shouldQuit() && !leave) {
-		if (_hasBackdrop && _player.decodeNextFrame()) {
-			const Graphics::Surface *frame = _player.currentSurface();
-			if (frame) {
-				g_system->copyRectToScreen(frame->getPixels(), frame->pitch, 0, 0, _player.width(), _player.height());
-				framesDecoded++;
-			}
+bool Scene::playOneShotClip(const Common::String &basename, const char *phase) {
+	const Common::Path path(Common::String::format("movies/%s.hnm", basename.c_str()));
+
+	HNMPlayer player;
+	if (!player.load(path, /* loop = */ false)) {
+		warning("Vangogh: scene '%s': could not open %s clip movies/%s.hnm", _name.c_str(), phase, basename.c_str());
+		return false;
+	}
+
+	debug("Vangogh: scene '%s': playing %s clip '%s' (one-shot)", _name.c_str(), phase, basename.c_str());
+
+	bool skipped = false;
+	while (!g_engine->shouldQuit() && !player.endOfVideo() && !skipped) {
+		if (player.decodeNextFrame()) {
+			const Graphics::Surface *frame = player.currentSurface();
+			if (frame)
+				g_system->copyRectToScreen(frame->getPixels(), frame->pitch, 0, 0, player.width(), player.height());
 		}
 
 		g_system->updateScreen();
@@ -194,7 +295,68 @@ void Scene::run() {
 			case Common::EVENT_QUIT:
 			case Common::EVENT_RETURN_TO_LAUNCHER:
 			case Common::EVENT_KEYDOWN:
-				leave = true;
+			case Common::EVENT_LBUTTONDOWN:
+			case Common::EVENT_RBUTTONDOWN:
+				skipped = true;
+				break;
+			default:
+				break;
+			}
+		}
+	}
+
+	// Deliberately does NOT clear/redraw after the loop: leaving the last
+	// decoded frame exactly as blitted IS "holding the last frame as the
+	// static room view" (the caller's interactive loop keeps calling
+	// updateScreen() without decoding anything further).
+	debug("Vangogh: scene '%s': %s clip '%s' decoded %d/%u frame(s)%s", _name.c_str(), phase, basename.c_str(),
+		player.getCurFrame() + 1, player.getFrameCount(), skipped ? " (skipped)" : "");
+	return true;
+}
+
+void Scene::run(bool simulateClick) {
+	// Automated/headless runs (see VangoghEngine::showAccueil()) have no
+	// real input device to ever produce a keypress, so under boot_param
+	// the interactive loop also leaves on its own after a small, fixed
+	// number of ticks. Interactive play never sets boot_param.
+	const bool autoAdvance = ConfMan.hasKey("boot_param");
+	const uint32 kAutoAdvanceTicks = 100;
+
+	_leaveRequested = false;
+	_resolvedAction = NavAction();
+
+	setPlaceholderCursor();
+
+	// Phase 1: arrival clip, one-shot (never looped -- scene-load-
+	// findings.md sec.2.2/sec.5: both plain and `r` clips play exactly
+	// once, the low-level frame driver unconditionally closes the file at
+	// end-of-stream).
+	if (_hasBackdrop)
+		playOneShotClip(_arrivalMovie, "arrival");
+
+	// Phase 2: interactive hotspot loop. The arrival clip's last frame is
+	// still on screen (see playOneShotClip()) -- exactly the "still
+	// backdrop between clips" the milestone brief asks for.
+	uint32 ticks = 0;
+	while (!g_engine->shouldQuit() && !_leaveRequested) {
+		g_system->updateScreen();
+		g_system->delayMillis(10);
+
+		Common::Event event;
+		while (g_system->getEventManager()->pollEvent(event)) {
+			switch (event.type) {
+			case Common::EVENT_QUIT:
+			case Common::EVENT_RETURN_TO_LAUNCHER:
+				_leaveRequested = true;
+				break;
+			case Common::EVENT_KEYDOWN:
+				if (event.kbd.keycode == Common::KEYCODE_BACKSPACE) {
+					// Generic "return to hub" sentinel -- NOT a per-room
+					// hotspot (scene-load-findings.md sec.7.4).
+					commitAction(kActionReturnToHub);
+				} else if (event.kbd.keycode == Common::KEYCODE_ESCAPE) {
+					_leaveRequested = true; // leave with no action resolved.
+				}
 				break;
 			case Common::EVENT_LBUTTONDOWN:
 				handleClick(event.mouse);
@@ -204,14 +366,48 @@ void Scene::run() {
 			}
 		}
 
+		if (simulateClick && !_leaveRequested) {
+			simulateClick = false; // only ever try once.
+			const Common::Point pt = bestSimulatedClickPoint();
+			if (pt.x >= 0) {
+				debug("Vangogh: scene '%s': boot_param set, simulating a click at (%d,%d) to demonstrate a transition",
+					_name.c_str(), pt.x, pt.y);
+				handleClick(pt);
+			} else {
+				debug("Vangogh: scene '%s': boot_param set, no clickable hotspot/region available to simulate", _name.c_str());
+			}
+		}
+
 		if (autoAdvance && ++ticks >= kAutoAdvanceTicks)
-			leave = true;
+			break; // no real input device and nothing left to simulate -- leave cleanly.
 	}
+
+	// Phase 3: departure clip, one-shot -- only for an actual room-leaving
+	// resolution (transition/hub), never for a raw engine quit/window
+	// close or a local (-1) action (which never sets _leaveRequested).
+	const bool engineQuitting = g_engine->shouldQuit();
+	if (_leaveRequested && !engineQuitting && _resolvedAction.kind != NavAction::kQuit && !_departureMovie.empty())
+		playOneShotClip(_departureMovie, "departure");
 
 	CursorMan.popCursor();
 	CursorMan.showMouse(false);
 
-	debug("Vangogh: scene '%s': leaving after %u backdrop frame(s) decoded", _name.c_str(), framesDecoded);
+	Common::String leaveDesc;
+	switch (_resolvedAction.kind) {
+	case NavAction::kTransition:
+		leaveDesc = Common::String::format("transition -> %s", _resolvedAction.targetScene.c_str());
+		break;
+	case NavAction::kHub:
+		leaveDesc = Common::String::format("return-to-hub -> %s", _resolvedAction.targetScene.c_str());
+		break;
+	case NavAction::kQuit:
+		leaveDesc = "quit";
+		break;
+	default:
+		leaveDesc = "no action resolved (auto-advance timeout, window closed, or Escape pressed)";
+		break;
+	}
+	debug("Vangogh: scene '%s': leaving (%s)", _name.c_str(), leaveDesc.c_str());
 }
 
 } // End of namespace Vangogh

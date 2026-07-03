@@ -28,19 +28,23 @@
 
 #include "vangogh/box3di.h"
 #include "vangogh/hnmplayer.h"
+#include "vangogh/navgraph.h"
 
 namespace Vangogh {
 
 /**
- * A design-independent, pre-rendered-backdrop "scene": an HNM6 movie loop
- * (see HNMPlayer) plus the oriented-box hotspot volumes decoded from the
- * matching scenes_3d container's BOX.3DI record (see box3di.h). This is
- * milestone 4's playback core: it deliberately knows nothing about
- * navigation (which scene comes next -- SceneFlowRE's scene-flow reversing
- * feeds that in later), puzzle state, or the real camera/hotspot-picking
- * model (see HotspotBox::projectToScreen()'s TODO). There is no runtime
- * mesh geometry to render in this engine at all -- every scene is a
- * pre-rendered video backdrop plus these collision/hotspot volumes.
+ * One playable room: a per-scene FIXED camera (box3di.h's CameraPose)
+ * projecting the `.3DI` hotspot boxes decoded from the matching
+ * scenes_3d/<name>.bfg's BOX.3DI record into 640x480 screen space, a pair
+ * of one-shot HNM backdrop clips (plain-named ARRIVAL, `r`-suffixed
+ * DEPARTURE -- see navgraph.h's backdropNamesForScene(), never looped,
+ * never auto-chained), and this scene's outgoing navigation edges
+ * (navgraph.h's navEdgesForScene()). run() plays the arrival clip once,
+ * holds its last frame as the static room view, waits for a hotspot
+ * click/keyboard sentinel, commits the resulting action through
+ * resolveNavAction() (mirroring PEINTRE.exe's fcn.00432e10), and -- if
+ * the action leaves the room -- plays the departure clip once before
+ * returning.
  */
 class Scene {
 public:
@@ -51,40 +55,85 @@ public:
 	Scene &operator=(const Scene &) = delete;
 
 	/**
-	 * Locates data/movies/<name>*.hnm for the backdrop and parses
-	 * data/scenes_3d/<name>.bfg's BOX.3DI record into hotspotBoxes(). The
-	 * two can fail independently (a warning() each, following every other
-	 * loader in this engine); this only returns false when BOTH fail, i.e.
-	 * there is nothing at all to show for this scene. Always logs
-	 * "scene <name>: N hotspot boxes loaded" via debug(), matching the
-	 * milestone brief, regardless of the backdrop's own outcome.
+	 * One decoded hotspot box's cached zoom-0 screen projection (computed
+	 * once here, in load(), against this scene's fixed camera pose) plus
+	 * whatever nav edge, if any, navEdgesForScene() bound to its index --
+	 * this is exactly the "projected boxes+targets" the `hotspots`
+	 * console command and the boot-flow log print.
+	 */
+	struct ProjectedHotspot {
+		uint32 boxIndex = 0;
+		bool visible = false;    ///< false if every corner is behind the camera at this pose (see HotspotBox::projectToScreen()).
+		Common::Rect rect;
+		double nearestDepth = 0.0;
+		bool hasAction = false;  ///< true if a NavEdge is bound to this box index.
+		int actionArg = 0;       ///< valid iff hasAction.
+		Common::String actionLabel; ///< valid iff hasAction, e.g. "-> jardin (walk)".
+	};
+
+	/**
+	 * Locates data/scenes_3d/<name>.bfg's BOX.3DI hotspot boxes, this
+	 * scene's camera pose (box3di.h's cameraPoseForScene()), backdrop
+	 * movie basenames and outgoing nav edges (navgraph.h), and projects
+	 * every decoded box through the camera once (see projectedHotspots()).
+	 * The BFG lookup and the arrival backdrop's existence check can fail
+	 * independently (a warning() each); this only returns false when
+	 * there is NOTHING at all to show or do for this scene (no backdrop,
+	 * no hotspot boxes, AND no nav edges -- e.g. an unknown scene name).
+	 * Always logs "scene <name>: N hotspot boxes loaded" and "projected N
+	 * hotspots" via debug(), matching the milestone brief.
 	 */
 	bool load();
 
 	/**
-	 * Runs the backdrop loop until a keypress or quit/return-to-launcher
-	 * request (matches the `scene <name>` console command's contract). A
-	 * mouse click logs its coordinates and any hotspotBoxes() entry whose
-	 * (placeholder, see box3di.h) 2D projection contains it, but does NOT
-	 * leave the loop -- clicking is the scene's own interaction, not an
-	 * exit gesture. Under automated/headless runs (ConfMan "boot_param"
-	 * set -- see VangoghEngine::run()/showAccueil(), which have no real
-	 * input device to ever deliver a keypress) the loop also leaves on its
-	 * own after a small, fixed number of backdrop frames.
+	 * Plays the arrival clip to completion (one-shot, skippable via any
+	 * key/click, quit-responsive -- never looped), then loops holding its
+	 * last decoded frame as the static room view while waiting for a
+	 * hotspot click, the Backspace "return to hub" sentinel, or Escape
+	 * ("leave with no action"). A resolved click is committed through
+	 * resolveNavAction() (navgraph.h); once that commit actually leaves
+	 * the room (a transition or hub result -- not a local/-1 action),
+	 * the departure clip (if this scene has one) plays one-shot before
+	 * returning. Under automated/headless runs (ConfMan "boot_param" --
+	 * no real input device ever delivers a keypress/click) the loop also
+	 * leaves on its own after a small, fixed number of ticks; if
+	 * @p simulateClick is also set, it first synthesizes exactly one
+	 * click (preferring a hotspot/region that leads to "jardin", so the
+	 * milestone's own musee/jardin cross-check scenes are both exercised
+	 * in one boot_param run; else the first available on-screen
+	 * hotspot/region) to demonstrate a real transition end-to-end.
 	 */
-	void run();
+	void run(bool simulateClick = false);
 
 	const Common::String &name() const { return _name; }
 	const Common::Array<HotspotBox> &hotspotBoxes() const { return _hotspotBoxes; }
+	const Common::Array<ProjectedHotspot> &projectedHotspots() const { return _projected; }
+	const Common::Array<NavEdge> &navEdges() const { return _edges; }
 	bool hasBackdrop() const { return _hasBackdrop; }
+	bool hasCameraLiteral() const { return _hasCameraLiteral; }
+
+	/** What run() resolved (transition/hub/quit/local/none) -- see navgraph.h's NavAction. */
+	const NavAction &resolvedAction() const { return _resolvedAction; }
 
 private:
-	void handleClick(const Common::Point &pt) const;
+	void projectHotspots();
+	const NavEdge *findEdgeForBox(uint32 boxIndex) const;
+	void handleClick(const Common::Point &pt);
+	void commitAction(int actionArg);
+	Common::Point bestSimulatedClickPoint() const;
+	bool playOneShotClip(const Common::String &basename, const char *phase);
 
 	Common::String _name;
-	HNMPlayer _player;
 	bool _hasBackdrop;
+	Common::String _arrivalMovie;
+	Common::String _departureMovie;
 	Common::Array<HotspotBox> _hotspotBoxes;
+	CameraPose _camera;
+	bool _hasCameraLiteral;
+	Common::Array<ProjectedHotspot> _projected;
+	Common::Array<NavEdge> _edges;
+	NavAction _resolvedAction;
+	bool _leaveRequested;
 };
 
 } // End of namespace Vangogh

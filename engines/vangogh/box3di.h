@@ -25,8 +25,74 @@
 #include "common/array.h"
 #include "common/rect.h"
 #include "common/scummsys.h"
+#include "common/str.h"
 
 namespace Vangogh {
+
+/**
+ * A scene's static, hardcoded fixed camera pose: position `(x,y,z)` in the
+ * same raw integer units as `.3DI` box coordinates (millimetre-scale),
+ * plus 2 BAM-encoded (12-bit, `& 0xfff`, 4096 units/circle) rotation
+ * angles -- yaw about Y applied before pitch about X, the convention
+ * scene_hotspots.py adopts (see its module docstring's "CONFIDENCE
+ * CAVEAT": the exact axis order/sign baked into PEINTRE.exe's
+ * fcn.004411c0 was not decoded bit-for-bit, but this reproduces
+ * plausible, mostly-on-screen results against real `.3DI` data). Ported
+ * from the literal table baked into fcn.00427600 -- see
+ * cameraPoseForScene() below for the concrete per-scene numbers.
+ */
+struct CameraPose {
+	int32 x, y, z;
+	int32 rotYawBam;   ///< "rotA" in scene_hotspots.py/scene-flow.md sec.3.3.
+	int32 rotPitchBam; ///< "rotB".
+};
+
+/**
+ * One of the 4 fixed viewport rects the real renderer/hit-tester uses
+ * (`fcn.0043b460` call sites, scene-flow.md sec.3.3) -- level 0 is the
+ * normal full-room view; 1..3 are the progressively tighter object
+ * close-up zooms used by the SAME hit-test (`fcn.00425e50`'s per-zoom
+ * bounding rects match these exactly). Only level 0 is used for Scene's
+ * room-level hotspot picking; the others exist for parity with
+ * scene_hotspots.py's ZOOM_VIEWPORTS and possible future close-up work.
+ */
+struct ZoomViewport {
+	int16 width, height, offsetX, offsetY;
+};
+
+/** The 4 literal zoom-level viewports, indices 0-3 (see ZoomViewport). */
+extern const ZoomViewport kZoomViewports[4];
+
+/** Literal focal-length-style projection scale, identical at all 4 zoom levels (fcn.0043b460). */
+const int kCameraFocalLength = 480;
+
+/**
+ * Looks up @p sceneName's literal default camera pose, transcribed from
+ * PEINTRE.exe's fcn.00427600 (scene-flow.md sec.3.3/sec.6;
+ * scene_hotspots.py's CAMERA_POSES) -- 12 of 14 scenes have a recovered
+ * literal. `chambrev` shares `chambreb`'s pose (day/night variant of the
+ * same room, scene-load-findings.md sec.1). Returns false, filling @p out
+ * with a documented IDENTITY fallback (origin position, zero rotation),
+ * for the 2 scenes with no recovered literal: `auberge` (the literal this
+ * session's reversing found is a suspicious all-zero placeholder, almost
+ * certainly inherited/uninitialized state, not a real pose) and
+ * `hopiext` (not located in the switches transcribed at all). This is
+ * NOT a guess at the real pose -- callers SHOULD log that projections for
+ * such a scene are unreliable when this returns false.
+ */
+bool cameraPoseForScene(const Common::String &sceneName, CameraPose &out);
+
+/**
+ * Projects one world-space point (raw `.3DI` units) through @p camera at
+ * @p zoomLevel (0-3, see kZoomViewports), field-for-field matching
+ * scene_hotspots.py's project(): rotate by yaw then pitch, translate
+ * relative to the camera, then perspective-divide by camera-space Z. @p
+ * outDepth receives that camera-space Z -- <=0 means the point is behind
+ * the camera (not really visible/pickable). Returns false (outputs left
+ * unset) only in the degenerate case `|Zc| < 1e-6`, mirroring the Python
+ * reference's `return None`.
+ */
+bool projectPoint(const double world[3], const CameraPose &camera, int zoomLevel, double &outX, double &outY, double &outDepth);
 
 /**
  * One oriented-hexahedron (extruded quadrilateral prism) hotspot/collision
@@ -55,21 +121,19 @@ struct HotspotBox {
 	double vertices[8][3] = {};
 
 	/**
-	 * TODO(SceneFlowRE): placeholder orthographic projection ONLY. This
-	 * engine has no runtime mesh/camera model at all (see the milestone 4
-	 * brief: everything is a pre-rendered HNM backdrop). This takes the
-	 * box's horizontal footprint (the two axes orthogonal to heightAxis)
-	 * as if it were already 2D and maps it onto the 640x480 window with a
-	 * fixed, arbitrary scale+offset -- just enough to make Scene's
-	 * click-vs-hotspot test exercisable. Replace once SceneFlowRE reverses
-	 * the game's real camera/hotspot-picking model.
+	 * Real per-scene fixed-camera projection, ported from
+	 * scene_hotspots.py's project()+dump_scene()'s bbox reduction:
+	 * projects all 8 corners through @p camera at @p zoomLevel, keeps
+	 * only the corners in FRONT of the camera (camera-space Z>0, exactly
+	 * dump_scene()'s `in_front` filter), and returns their screen-space
+	 * bounding box plus the NEAREST (smallest positive) camera-space Z
+	 * among them in @p outNearestDepth -- for nearest-depth-wins hit
+	 * testing across multiple overlapping boxes. Returns false (leaving
+	 * both outputs unset) if every corner is behind the camera/degenerate
+	 * at this pose, mirroring dump_scene()'s "entirely behind camera or
+	 * degenerate -- not visible/pickable" branch.
 	 */
-	Common::Rect projectToScreen() const;
-
-	/** True if @p pt (screen-space) falls inside projectToScreen(). */
-	bool containsScreenPoint(const Common::Point &pt) const {
-		return projectToScreen().contains(pt);
-	}
+	bool projectToScreen(const CameraPose &camera, int zoomLevel, Common::Rect &outRect, double &outNearestDepth) const;
 };
 
 /**
