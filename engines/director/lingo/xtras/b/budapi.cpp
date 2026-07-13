@@ -19,7 +19,9 @@
  *
  */
 
+#include "common/savefile.h"
 #include "common/system.h"
+#include "common/formats/ini-file.h"
 
 #include "director/director.h"
 #include "director/util.h"
@@ -399,8 +401,56 @@ void BudAPIXtra::m_baDiskInfo(int nargs) {
 }
 XOBJSTUB(BudAPIXtra::m_baMemoryInfo, 0)
 XOBJSTUB(BudAPIXtra::m_baFindApp, 0)
-XOBJSTUB(BudAPIXtra::m_baReadIni, 0)
-XOBJSTUB(BudAPIXtra::m_baWriteIni, 0)
+void BudAPIXtra::m_baReadIni(int nargs) {
+	// baReadIni(section, key, default, iniFile) reads a Windows INI entry;
+	// the supplied default is returned when the file, section or key is
+	// missing. Values written by baWriteIni() live in the ScummVM save
+	// sandbox (the game/CD directory is read-only media), so check there
+	// first and fall back to the file bundled with the game.
+	ARGNUMCHECK(4);
+	Common::String iniFile = g_lingo->pop().asString();
+	Common::String defaultVal = g_lingo->pop().asString();
+	Common::String key = g_lingo->pop().asString();
+	Common::String section = g_lingo->pop().asString();
+
+	Common::String saveName = savePrefix() + Common::lastPathComponent(iniFile, g_director->_dirSeparator);
+	Common::INIFile ini;
+	ini.allowNonEnglishCharacters();
+	Common::String value;
+	if (ini.loadFromSaveFile(saveName) && ini.getKey(key, section, value)) {
+		g_lingo->push(Datum(value));
+		return;
+	}
+
+	Common::Path resolved = findPath(iniFile);
+	if (!resolved.empty()) {
+		Common::INIFile bundled;
+		bundled.allowNonEnglishCharacters();
+		if (bundled.loadFromFile(resolved) && bundled.getKey(key, section, value)) {
+			g_lingo->push(Datum(value));
+			return;
+		}
+	}
+	g_lingo->push(Datum(defaultVal));
+}
+void BudAPIXtra::m_baWriteIni(int nargs) {
+	// baWriteIni(section, key, value, iniFile) writes a Windows INI entry.
+	// Persist to the ScummVM save sandbox under the same mangled name
+	// m_baReadIni() checks first; the game directory stands in for
+	// read-only install/CD media and is never written to.
+	ARGNUMCHECK(4);
+	Common::String iniFile = g_lingo->pop().asString();
+	Common::String value = g_lingo->pop().asString();
+	Common::String key = g_lingo->pop().asString();
+	Common::String section = g_lingo->pop().asString();
+
+	Common::String saveName = savePrefix() + Common::lastPathComponent(iniFile, g_director->_dirSeparator);
+	Common::INIFile ini;
+	ini.allowNonEnglishCharacters();
+	ini.loadFromSaveFile(saveName);
+	ini.setKey(key, section, value);
+	g_lingo->push(Datum(ini.saveToSaveFile(saveName) ? 1 : 0));
+}
 XOBJSTUB(BudAPIXtra::m_baFlushIni, 0)
 XOBJSTUB(BudAPIXtra::m_baReadRegString, 0)
 XOBJSTUB(BudAPIXtra::m_baWriteRegString, 0)
@@ -460,6 +510,16 @@ XOBJSTUB(BudAPIXtra::m_baRefreshDesktop, 0)
 XOBJSTUB(BudAPIXtra::m_baFileAge, 0)
 void BudAPIXtra::m_baFileExists(int nargs) {
 	Common::String name = g_lingo->pop().asString();
+
+	// INI files written by baWriteIni() live in the save sandbox, not the
+	// game directory; report them as existing so a game finds its own
+	// persistent state on later runs.
+	Common::String saveName = savePrefix() + Common::lastPathComponent(name, g_director->_dirSeparator);
+	if (!g_system->getSavefileManager()->listSavefiles(saveName).empty()) {
+		g_lingo->push(Datum(1));
+		return;
+	}
+
 	g_lingo->push(Datum(findPath(name, true, true, false).empty() ? 0 : 1));
 }
 XOBJSTUB(BudAPIXtra::m_baFolderExists, 0)

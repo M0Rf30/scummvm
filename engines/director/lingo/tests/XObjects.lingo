@@ -35,3 +35,16 @@ set FileIO = "test"
 showGlobals() -- FileIO should be listed
 clearGlobals()
 scummVMAssert(voidp(FileIO)) -- FileIO should be cleared
+
+-- BuddyAPI ini persistence: write, read back, default fallback, existence.
+-- BudAPI is a D5+ Xtra; leaves scummvmtest.ini behind in the save sandbox.
+set save to the scummvmVersion
+set the scummvmVersion to 500
+openXLib("budapi")
+baWriteIni("general", "TestKey", "TestValue", "scummvmtest.ini")
+scummvmAssertEqual(baReadIni("general", "TestKey", "fallback", "scummvmtest.ini"), "TestValue")
+scummvmAssertEqual(baReadIni("general", "Missing", "fallback", "scummvmtest.ini"), "fallback")
+scummvmAssertEqual(baReadIni("nosection", "TestKey", "fallback", "missing.ini"), "fallback")
+scummvmAssertEqual(baFileExists("scummvmtest.ini"), 1)
+closeXLib "budapi"
+set the scummvmVersion to save
