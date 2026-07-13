@@ -638,6 +638,20 @@ Common::Path resolveFSPath(const Common::String &path, const Common::Path &base,
 	Common::String converted = convertPath(path);
 	debugC(2, kDebugPaths, "  convertPath(): '%s' => '%s'", path.c_str(), converted.c_str());
 
+	// A bare volume/root reference (e.g. "C:\", "@:", "::") converts to an
+	// empty relative path -- there is nothing left to search for. Director
+	// treats checking such a path as asking "does this search location
+	// exist", which is true as long as it's mounted; the tokenizer loop
+	// below never runs for an empty string, so handle it explicitly.
+	if (converted.empty() && !path.empty()) {
+		debugCN(1, kDebugPaths, "%s", recIndent());
+		debugC(1, kDebugPaths, "resolveFSPath(): '%s' is a bare volume/root reference, matching search base", path.c_str());
+		Common::Path rootMatch = Common::Path(base);
+		if (rootMatch.empty())
+			rootMatch = Common::Path(".");
+		return rootMatch;
+	}
+
 	// Absolute path to the game directory
 	Common::Path gamePath = Common::Path(g_director->getGameDataDir()->getPath());
 	// Absolute path to the game directory + the base search path
