@@ -332,6 +332,14 @@ scummvmAssertEqual(getOne(testList, subItem), 3)
 set testList to [#a, #b, #c, #d, #e]
 scummvmAssertEqual(getProp(testList, 3), #c)
 
+-- getProp/count D5 forms: getProp(list, #prop, index), count(list, #prop)
+set testList to [#vals: [10, 20, 30], #name: "x"]
+scummvmAssertEqual(getProp(testList, #vals, 2), 20)
+scummvmAssertError getProp(testList, #vals, 7)
+scummvmAssertError getProp(testList, #missing, 1)
+scummvmAssertEqual(count(testList, #vals), 3)
+scummvmAssertEqual(count(testList), 2)
+
 
 -- getPropAt
 

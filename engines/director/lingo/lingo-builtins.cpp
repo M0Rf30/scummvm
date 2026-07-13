@@ -82,7 +82,7 @@ static const BuiltinProto builtins[] = {
 	{ "addAt",			LB::b_addAt,		3, 3, 400, HBLTIN_LIST },	//			D4 h
 	{ "addProp",		LB::b_addProp,		3, 3, 400, HBLTIN_LIST },	//			D4 h
 	{ "append",			LB::b_append,		2, 2, 400, HBLTIN_LIST },	//			D4 h
-	{ "count",			LB::b_count,		1, 1, 400, FBLTIN_LIST },	//			D4 f
+	{ "count",			LB::b_count,		1, 2, 400, FBLTIN_LIST },	//			D4 f, 2-arg form D5
 	{ "deleteAt",		LB::b_deleteAt,		2, 2, 400, HBLTIN_LIST },	//			D4 h
 	{ "deleteOne",		LB::b_deleteOne,	2, 2, 400, HBLTIN_LIST },	//			D4 h, documented in D5
 	{ "deleteProp",		LB::b_deleteProp,	2, 2, 400, HBLTIN_LIST },	//			D4 h
@@ -94,7 +94,7 @@ static const BuiltinProto builtins[] = {
 	{ "getLast",		LB::b_getLast,		1, 1, 400, FBLTIN_LIST },	//			D4 f
 	{ "getOne",			LB::b_getOne,		2, 2, 400, FBLTIN_LIST },	//			D4 f
 	{ "getPos",			LB::b_getPos,		2, 2, 400, FBLTIN_LIST },	//			D4 f
-	{ "getProp",		LB::b_getProp,		2, 2, 400, FBLTIN_LIST },	//			D4 f
+	{ "getProp",		LB::b_getProp,		2, 3, 400, FBLTIN_LIST },	//			D4 f, 3-arg form D5
 	{ "getPropAt",		LB::b_getPropAt,	2, 2, 400, FBLTIN_LIST },	//			D4 f
 	{ "list",			LB::b_list,			-1,0, 400, FBLTIN_LIST },	//			D4 f
 	{ "listP",			LB::b_listP,		1, 1, 400, FBLTIN_LIST },	//			D4 f
@@ -999,6 +999,18 @@ void LB::b_append(int nargs) {
 }
 
 void LB::b_count(int nargs) {
+	// D5 count(obj, #prop) counts the entries of obj's property
+	if (nargs == 2) {
+		uint stackSize = g_lingo->_state->stack.size();
+		b_getProp(2);
+		if (g_lingo->_state->stack.size() != stackSize - 1) {
+			// getProp errored and left no value to count
+			g_lingo->push(Datum());
+			return;
+		}
+		b_count(1);
+		return;
+	}
 	Datum list = g_lingo->pop();
 	Datum result;
 	result.type = INT;
@@ -1016,7 +1028,9 @@ void LB::b_count(int nargs) {
 		result.u.i = list.u.obj->getPropCount();
 		break;
 	default:
-		TYPECHECK3(list, ARRAY, PARRAY, OBJECT);
+		warning("BUILDBOT: b_count: list arg should be of type ARRAY, PARRAY, or OBJECT, not %s", list.type2str());
+		g_lingo->push(Datum());
+		return;
 	}
 
 	g_lingo->push(result);
@@ -1292,6 +1306,10 @@ void LB::b_getPos(int nargs) {
 }
 
 void LB::b_getProp(int nargs) {
+	// D5 getProp(list, #prop, index): fetch the property, then index it
+	Datum subIndex;
+	if (nargs == 3)
+		subIndex = g_lingo->pop();
 	Datum prop = g_lingo->pop();
 	Datum list = g_lingo->pop();
 
@@ -1301,9 +1319,11 @@ void LB::b_getProp(int nargs) {
 			// D4 allows getProp to be called on ARRAYs
 			g_lingo->push(list);
 			g_lingo->push(prop);
-			b_getAt(nargs);
+			b_getAt(2);
 		} else {
 			g_lingo->lingoError("BUILDBOT: b_getProp: Attempted to call on an ARRAY");
+			g_lingo->push(Datum());
+			return;
 		}
 		break;
 	case PARRAY: {
@@ -1312,6 +1332,8 @@ void LB::b_getProp(int nargs) {
 			g_lingo->push(list.u.parr->arr[index - 1].v);
 		} else {
 			g_lingo->lingoError("BUILDBOT: b_getProp: Property %s not found", prop.asString().c_str());
+			g_lingo->push(Datum());
+			return;
 		}
 		break;
 	}
@@ -1319,6 +1341,7 @@ void LB::b_getProp(int nargs) {
 		{
 			if (prop.type != SYMBOL) {
 				g_lingo->lingoError("BUILDBOT: b_getProp(): symbol expected, got %s", prop.type2str());
+				g_lingo->push(Datum());
 				return;
 			}
 			Datum d;
@@ -1328,8 +1351,14 @@ void LB::b_getProp(int nargs) {
 		}
 		break;
 	default:
-		TYPECHECK3(list, ARRAY, PARRAY, OBJECT);
-		break;
+		warning("BUILDBOT: b_getProp: list arg should be of type ARRAY, PARRAY, or OBJECT, not %s", list.type2str());
+		g_lingo->push(Datum());
+		return;
+	}
+
+	if (nargs == 3) {
+		g_lingo->push(subIndex);
+		b_getAt(2);
 	}
 }
 
