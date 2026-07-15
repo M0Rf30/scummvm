@@ -207,6 +207,8 @@ Lingo::Lingo(DirectorEngine *vm) : _vm(vm) {
 	_trace = false;
 	_traceLoad = 0;
 	_updateMovieEnabled = false;
+	// Default measured in Director 8.0 (Win/en): ["DirectSound", "MacroMix", "QT3Mix"]
+	_soundDevice = "DirectSound";
 
 	// events
 	_passEvent = false;
