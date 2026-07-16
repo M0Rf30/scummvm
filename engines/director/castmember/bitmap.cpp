@@ -1144,8 +1144,6 @@ void BitmapCastMember::writeCastData(Common::SeekableWriteStream *writeStream) {
 	writeStream->writeUint16BE(_regY);
 	writeStream->writeUint16BE(_regX);
 
-	warning("BitmapCastMember::writeCastData(): TODO process D6+");
-
 	if (_bitsPerPixel != 0) {
 		writeStream->writeByte(0);		// Skip one byte (not stored)
 		writeStream->writeByte(_bitsPerPixel);
