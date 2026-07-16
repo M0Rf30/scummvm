@@ -102,6 +102,10 @@ public:
 
 	virtual CollisionTest isWithin(const Common::Rect &bbox, const Common::Point &pos, InkType ink) { return bbox.contains(pos) ? kCollisionYes : kCollisionNo; }
 
+	// Cursor Asset Xtra members resolve to bitmap cast members to be used
+	// as custom cursors.
+	virtual bool getCursorInfo(CastMemberID &image, CastMemberID &mask) { return false; }
+
 	// When writing the 'CASt' resource, the general structure is the same for all the CastMembers
 	// Three parts to a 'CASt' resource (header + _info_, _data_)
 	// The headers, are common, the _info_ writing is handled by the Cast class, so no worries there

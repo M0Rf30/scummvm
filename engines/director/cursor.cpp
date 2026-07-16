@@ -60,6 +60,23 @@ bool Cursor::operator==(const CursorRef &c) {
 }
 
 void Cursor::readFromCast(Datum cursorCasts) {
+	// A bare cast member reference is accepted when it names a Cursor
+	// Asset Xtra member (D6+), e.g. `sprite.cursor = member "myCursor"`.
+	if (cursorCasts.type != ARRAY) {
+		CastMemberID xtraId = cursorCasts.asMemberID();
+		CastMember *xtraCast = g_director->getCurrentMovie()->getCastMember(xtraId);
+		CastMemberID imageId, maskId2;
+		if (xtraCast && xtraCast->getCursorInfo(imageId, maskId2)) {
+			Datum d;
+			d.type = ARRAY;
+			d.u.farr = new FArray;
+			d.u.farr->arr.push_back(Datum(imageId));
+			if (!maskId2.isNull())
+				d.u.farr->arr.push_back(Datum(maskId2));
+			readFromCast(d);
+			return;
+		}
+	}
 	if (cursorCasts.type != ARRAY || cursorCasts.u.farr->arr.size() < 1) {
 		warning("Cursor::readFromCast: Needs array of at least 1");
 		return;
@@ -69,6 +86,17 @@ void Cursor::readFromCast(Datum cursorCasts) {
 
 	CastMemberID cursorId = cursorCasts.u.farr->arr[0].asMemberID();
 	CastMember *cursorCast = g_director->getCurrentMovie()->getCastMember(cursorId);
+
+	// A Cursor Asset Xtra member in first position resolves to the bitmap
+	// members referenced by its payload.
+	if (cursorCast && cursorCast->_type == kCastXtra) {
+		CastMemberID imageId, maskId2;
+		if (cursorCast->getCursorInfo(imageId, maskId2)) {
+			cursorId = imageId;
+			cursorCast = g_director->getCurrentMovie()->getCastMember(cursorId);
+		}
+	}
+
 	if (!cursorCast || cursorCast->_type != kCastBitmap) {
 		warning("Cursor::readFromCast: No bitmap cast for cursor");
 		return;
