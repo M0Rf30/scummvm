@@ -51,6 +51,8 @@ new object me
 * baSysFolder string FolderType -- returns Windows special folders location
 * baCpuInfo string InfoType -- returns information about the processor installed
 * baDiskInfo string Disk, string InfoType -- returns information about Disk
+* baDiskList -- returns a list of the available drive letters
+* baEjectDisk string Disk -- ejects the removable volume Disk
 * baMemoryInfo string InfoType -- returns memory information
 * baFindApp string Extension -- finds application associated with Extension
 * baReadIni string Section, string Keyname, string Default, string IniFile -- reads ini file entry
@@ -209,6 +211,8 @@ static BuiltinProto xlibBuiltins[] = {
 	{ "baSysFolder", BudAPIXtra::m_baSysFolder, 1, 1, 500, HBLTIN },
 	{ "baCpuInfo", BudAPIXtra::m_baCpuInfo, 1, 1, 500, HBLTIN },
 	{ "baDiskInfo", BudAPIXtra::m_baDiskInfo, 2, 2, 500, HBLTIN },
+	{ "baDiskList", BudAPIXtra::m_baDiskList, 0, 0, 500, HBLTIN },
+	{ "baEjectDisk", BudAPIXtra::m_baEjectDisk, 1, 1, 500, HBLTIN },
 	{ "baMemoryInfo", BudAPIXtra::m_baMemoryInfo, 1, 1, 500, HBLTIN },
 	{ "baFindApp", BudAPIXtra::m_baFindApp, 1, 1, 500, HBLTIN },
 	{ "baReadIni", BudAPIXtra::m_baReadIni, 4, 4, 500, HBLTIN },
@@ -399,6 +403,19 @@ void BudAPIXtra::m_baDiskInfo(int nargs) {
 		g_lingo->push(Datum(Common::String("Hard")));
 	else
 		g_lingo->push(Datum(Common::String("")));
+}
+void BudAPIXtra::m_baDiskList(int nargs) {
+	// ScummVM has no removable-volume concept; an empty list makes the callers'
+	// count()/repeat loops no-ops.
+	g_lingo->dropStack(nargs);
+	Datum result;
+	result.type = ARRAY;
+	result.u.farr = new FArray();
+	g_lingo->push(result);
+}
+void BudAPIXtra::m_baEjectDisk(int nargs) {
+	g_lingo->dropStack(nargs);
+	g_lingo->push(Datum(0));
 }
 XOBJSTUB(BudAPIXtra::m_baMemoryInfo, 0)
 XOBJSTUB(BudAPIXtra::m_baFindApp, 0)
