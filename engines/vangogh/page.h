@@ -32,6 +32,7 @@
 
 namespace Vangogh {
 
+class PageGame;
 class Sound;
 struct WorldInput;
 
@@ -89,12 +90,15 @@ public:
 	int dragItem() const { return _dragItem; }
 
 private:
+	friend class PageGame;
+
 	enum State {
 		kIdle,
 		kDrag,			///< dragging a bar item (an item of another page is dragged the same way and always rejected)
 		kReject,		///< item flying back to the bar
 		kPlaceOpen,		///< CapsOP animation
-		kPlayback,		///< the item's movie or voice
+		kPlayback,		///< page 0 / page 21 movies
+		kGame,			///< the slot's handler runs (the item's movie, voice or mini game, state 0xd)
 		kPlaceClose,	///< CapsAC animation
 		kClickOpen,		///< CapsAO animation after clicking a placed item
 		kComplete,		///< PA<n>a animation
@@ -112,7 +116,7 @@ private:
 	};
 	enum BarState { kBarHidden, kBarIn, kBarShown, kBarOut };
 	enum Loupe { kLoupeAppearing, kLoupeVisible, kLoupeHidden };
-	enum Next { kNextNone, kNextClose, kNextP0Loupe, kNextP0Sun, kNextP0Hold, kNextEndWait, kNextEndHold };
+	enum Next { kNextNone, kNextP0Loupe, kNextP0Sun, kNextP0Hold, kNextEndWait, kNextEndHold };
 
 	/** A sprite animation: cell advances every other tick. */
 	struct Anim {
@@ -134,11 +138,15 @@ private:
 
 	void play(const char *name);
 	void playItemSound(int item);
-	void startMovie(int index);
+	void startMovie(int index, bool noSkip);
 	void autosave();
 
 	void placeItem(int slot);
 	void startPlayback();
+	void enterGame(bool replay);
+	void tickGame(const WorldInput &in);
+	void endGame();
+	void rejectPlacement();
 	void endPlayback();
 	void afterPlayback();
 	void finishPlacement();
@@ -158,6 +166,7 @@ private:
 
 	void compose();
 	void drawCapsules();
+	void bakeCapsules(int openSlot);
 	void drawBar();
 	void setState(State s);
 
@@ -188,7 +197,12 @@ private:
 
 	MovieClip _clip;
 	int _movieIndex;
-	uint16 _voice;
+	bool _movieSkippable;		///< the running movie ends on a held button (sub_417380's second argument is 0)
+	bool _movieLayer;			///< the movie's last frame stays on the page until the background is reloaded
+	PageGame *_game;			///< the running slot handler (state 0xd)
+	int _gameSlot;
+	bool _gameDropped;			///< dat_52a4d8: the handler runs for an item just dropped (not a click on a placed capsule)
+	bool _gameOk;				///< dat_52a4c0: set by the handlers, an unset flag after a drop sends the item back
 
 	Anim _anim;					///< transient animation (capsule, POT, painting)
 	int _animSlot;				///< capsule slot of _anim, or -1

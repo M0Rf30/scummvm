@@ -95,6 +95,8 @@ public:
 
 	/** View-space position of @p node's origin as of the last render(). */
 	void nodeViewPos(uint node, float out[3]) const;
+	/** View-space centroid of @p node's vertices as of the last render() (test aid); false if it has none. */
+	bool nodeViewCentroid(const Model3D &model, uint node, float out[3]) const;
 
 	const Graphics::Surface &surface() const { return _fb; }
 

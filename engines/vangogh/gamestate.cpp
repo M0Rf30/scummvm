@@ -93,6 +93,8 @@ const StateFlagName kFlagNames[] = {
 	FLAG("chambre.vDoorOpen", kCbVDoorOpen), FLAG("chambre.drawerOpen", kCbDrawerOpen),
 	FLAG("chambre.chairMoved", kCbChairMoved), FLAG("chambre.paperOpen", kCbPaperOpen),
 	FLAG("chambre.mirrorBroken", kCbMirrorBroken), FLAG("chambre.shoesEnabled", kCbShoesEnabled),
+	FLAG("chambre.pillowDoneA", kCbPillowDoneA), FLAG("chambre.pillowDoneB", kCbPillowDoneB),
+	FLAG("chambre.mirrorSoundPlayed", kCbMirrorSoundPlayed),
 	FLAG("terrasse.dieTaken", kTeDieTaken), FLAG("terrasse.glassesTaken", kTeGlassesTaken),
 	FLAG("terrasse.letterTaken", kTeLetterTaken), FLAG("terrasse.storeUp", kTeStoreUp),
 	FLAG("terrasse.introPlayed", kTeIntroPlayed),
@@ -107,7 +109,7 @@ const StateFlagName kFlagNames[] = {
 
 } // end of anonymous namespace
 
-GameState::GameState() {
+GameState::GameState() : mirrorSoundPending(false) {
 	newGame();
 }
 

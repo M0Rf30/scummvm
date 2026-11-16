@@ -57,6 +57,7 @@ public:
 		int32 pos[3] = { 0, 0, 0 };
 		float rot[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };	///< row-major, v_parent = R * v_child
 		char name[13] = { 0 };
+		uint32 uvFirst = 0, uvCount = 0;	///< this node's UV records in uvs() (pairs)
 	};
 
 	struct Vertex {
@@ -74,6 +75,7 @@ public:
 		uint16 node;
 		int32 bank;		///< texture bank index, -1 if none (flat lists / missing .3DM)
 		uint16 color;	///< RGB565, flat lists
+		char key[17];	///< texture name (the material key, or the name given to retexture())
 		uint32 firstFace;
 		uint32 numFaces;
 	};
@@ -98,6 +100,23 @@ public:
 	const Face *faces() const { return _faces.begin(); }
 	uint numLists() const { return _lists.size(); }
 	const FaceList &list(uint i) const { return _lists[i]; }
+
+	/**
+	 * Registers the texture @p name backed by the 3DM record @p file (sub_43ded0), so retexture() can switch to it
+	 * later without the archive. False if the record is missing.
+	 */
+	bool registerTexture(const BFGFile &bfg, const char *name, const char *file);
+	/**
+	 * sub_43c0b0: every face list of the model whose texture is called @p from now uses the registered texture
+	 * @p to (and is called @p to afterwards). Returns the number of lists switched.
+	 */
+	uint retexture(const char *from, const char *to);
+	/**
+	 * Adds (@p du, @p dv) texels to every UV record of @p node (the exe's UV record walks, sub_43e2d0 and friends).
+	 * With @p wrap the coordinates stay in [0, 256) (the 0x80ffffff mask of the fire and steam scrolls).
+	 */
+	void shiftNodeUV(uint node, float du, float dv, bool wrap);
+
 	const uint16 *palette(int32 bank) const { return &_palettes[(uint)bank * 256]; }	///< shade row 16 (node shade 15)
 	const byte *texture(int32 bank) const { return &_textures[(uint)bank * kTexSize * kTexSize]; }
 
@@ -105,6 +124,12 @@ private:
 	bool parse(const Common::Array<byte> &rec, const BFGFile &bfg);
 	int32 loadBank(const BFGFile &bfg, const char *file);
 
+	struct RegisteredTexture {
+		char name[17];
+		int32 bank;
+	};
+
+	Common::Array<RegisteredTexture> _registered;
 	Common::Array<Node> _nodes;
 	Common::Array<Vertex> _vertices;
 	Common::Array<float> _uvs;

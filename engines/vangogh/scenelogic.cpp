@@ -29,6 +29,7 @@
 
 #include "vangogh/world.h"
 #include "vangogh/bfg.h"
+#include "vangogh/page.h"
 #include "vangogh/sound.h"
 #include "vangogh/vangogh.h"
 
@@ -572,7 +573,7 @@ void World::animDone(uint i) {
 		if (i == 1) {			// bell rang: the grille starts to lift
 			_anims[1].elapsed = 1;
 			startAnim(0);
-			playSound("cloche");
+			playSound("portail");	// the cloche sound itself plays on the click
 		} else {
 			s.set(kHxGridOpen, 1);
 			setBox(1);
@@ -618,6 +619,13 @@ void World::animDone(uint i) {
 			selectBoxMaisonj();
 		} else if (i == 4) {
 			_anims[4].elapsed = 1;
+		}
+		break;
+	case kSceneCafe:
+		if (i == 0) {			// billiard done: the shadow ball can be taken
+			_billiardRt = true;
+			setObjectType("ombre", 2);
+			setObjectType("ke", 255);
 		}
 		break;
 	case kSceneHopiint:
@@ -771,18 +779,24 @@ void World::initSceneState(Pose3D *pose) {
 			startAnim(2);
 		}
 
-		// Solved paintings are recoloured in the exe (the RVB* textures); here they become inert markers.
+		// Solved paintings are recoloured (sub_43c0b0: the painting's own texture -> its RVB* "restored" texture)
+		// and become 0x3c markers.
 		struct Painting {
 			const char *name;
 			int first, last;
-			int second, third;
+			int second;
+			const char *base, *rvb;
 		};
 		static const Painting kPaintings[] = {
-			{ "m01_02", 1, 1, -1, -1 }, { "m01_03", 2, 3, -1, -1 }, { "m03_01", 4, 6, -1, -1 },
-			{ "m03_02", 7, 11, -1, -1 }, { "m03_03", 12, 12, -1, -1 }, { "m03_04", 13, 15, -1, -1 },
-			{ "m03_05", 16, 17, -1, -1 }, { "m03_06", 18, 18, -1, -1 }, { "m04_02", 22, 22, 24, -1 },
-			{ "m04_03", 23, 23, -1, -1 }
+			{ "m01_02", 1, 1, -1, "PATATHOM", "RVBPATAT" }, { "m01_03", 2, 3, -1, "MANGEUR", "RVBMANGE" },
+			{ "m03_01", 4, 6, -1, "CAFE", "RVBCAFE" }, { "m03_02", 7, 11, -1, "CHAMBRE", "RVBCHAMB" },
+			{ "m03_03", 12, 12, -1, "MAISONJ", "RVBMAISO" }, { "m03_04", 13, 15, -1, "HOSTO", "RVBHOSTO" },
+			{ "m03_05", 16, 17, -1, "TERRASSE", "RVBTERRA" }, { "m03_06", 18, 18, -1, "PONT", "RVBPONT" },
+			{ "m04_02", 22, 22, 24, "CHAMP", "RVBCHAMP" }, { "m04_03", 23, 23, -1, "EGLISE", "RVBEGLIS" }
 		};
+		_model.retexture("ROBI3", "ROBI3N");
+		_robotTalk = _robotUV = _robotUVStep = 0;
+		_robotUVDir = 1;
 		for (uint k = 0; k < ARRAYSIZE(kPaintings); k++) {
 			const Painting &p = kPaintings[k];
 			bool all = true;
@@ -790,8 +804,10 @@ void World::initSceneState(Pose3D *pose) {
 				all &= s.puzzleSolved(i);
 			if (p.second >= 0)
 				all &= s.puzzleSolved(p.second);
-			if (all)
+			if (all) {
 				setObjectType(p.name, 0x3c);
+				_model.retexture(p.base, p.rvb);
+			}
 		}
 		break;
 	}
@@ -835,6 +851,10 @@ void World::initSceneState(Pose3D *pose) {
 		break;
 
 	case kSceneMaisonet:
+		if (s.isSet(kMeHenFled) && _anims[0].loaded) {
+			_anims[0].elapsed = _anims[0].clip.duration() - 1;
+			poseAnim(0, _anims[0].elapsed);
+		}
 		if (s.isSet(kMeDigDone)) {
 			// The exe finishes the shovel with the hen clip's length (4f7d14).
 			if (_anims[1].loaded)
@@ -858,10 +878,27 @@ void World::initSceneState(Pose3D *pose) {
 			setObjectType("portepoel", 255);
 			setObjectType("fagot", 4);
 		}
-		if (s.isSet(kMgKindlingPlaced))
+		// sub_41f390: timers, the window, the fire and the kettle (decomp 13268-13315).
+		_mgTick = _mgCry = _mgBoil = 0;
+		_mgCrying = _mgWindowRt = false;
+		_mgCoucou = true;
+		if (s.isSet(kMgKindlingPlaced)) {
+			hideObj("fagot");
 			setObjectType("buche", 4);
-		if (s.isSet(kMgWindowClosed))
+		}
+		if (s.isSet(kMgWindowClosed)) {
 			animToEnd(3);
+			_mgWindowRt = _mgCrying = true;
+			setObjectType("bersso", 3);
+		} else {
+			playSound("fenclaq", true);
+		}
+		if (s.isSet(kMgLogPlaced)) {
+			hideObj("buche");
+			playSound("feu", true);
+			if (!s.isSet(kMgKettleTaken))
+				playSound("bouilloi", true);
+		}
 		if (s.puzzleSolved(2))
 			setObjectType("bersso", 0x3c);
 		if (s.puzzleSolved(3))
@@ -877,6 +914,11 @@ void World::initSceneState(Pose3D *pose) {
 		break;
 
 	case kSceneCafe:
+		_clockTimer = _clockLast = _clockState = 0;
+		_clockEnable = true;
+		_billiardRt = false;
+		Common::strlcpy(_mirrorTex, "MIRROIRG", sizeof(_mirrorTex));
+		setObjectType("mirroir", 255);
 		if (!s.isSet(kCfClockTaken)) {
 			if (g_engine && g_engine->_sound) {
 				const uint16 h = g_engine->_sound->load("tictac");
@@ -974,8 +1016,11 @@ void World::initSceneState(Pose3D *pose) {
 			setObjectType("papierferm", 255);
 		}
 		if (s.puzzleSolved(7)) {
+			// Decomp 11360-11365: the pillow solved turns both canvases into the razor-sketch texture.
 			setObjectType("tabpay", 3);
 			setObjectType("tab01", 3);
+			_model.retexture("TOILES2", "RASOIR");
+			_model.retexture("TOILES", "RASOIR");
 		}
 		if (s.puzzleSolved(7)) setObjectType("oreiller", 0x3c);
 		if (s.puzzleSolved(8)) setObjectType("tabpay", 0x3c);
@@ -992,6 +1037,11 @@ void World::initSceneState(Pose3D *pose) {
 		break;
 
 	case kSceneMaisonj:
+		// Decomp 12385-12403: the house starts in its MJ* textures, WMAP*, and turns yellow once pot02 was used.
+		_model.retexture("MJ01", "WMAP01");
+		_model.retexture("MJ02", "WMAP02");
+		if (s.isSet(kMjYellowDone))
+			yellowHouse();
 		if (s.isSet(kMjYellowDone) || s.isSet(kMjRainSeen))
 			setObjectType("pot01", 255);
 		else
@@ -1159,14 +1209,79 @@ void World::sceneTick(int dt) {
 					if (_voice)
 						g_engine->_sound->play(_voice, false);
 				}
+				// sub_42b320's talking screen: ROBI3N -> ROBI3 while the second line plays.
+				_robotTalk = 1;
+				_model.retexture("ROBI3N", "ROBI3");
 			} else {
 				_timer[0] = 0;
+				if (_robotTalk) {
+					_robotTalk = 0;
+					_model.retexture("ROBI3", "ROBI3N");
+				}
 				if (!s.isSet(kOfsStarTaken) && _anims[0].elapsed != 0x34) {
 					startAnim(0);
 					playSound("etoile");
 				}
 				setTypes(4, kRobotParts);
 			}
+		}
+		if (_robotTalk) {
+			// sub_42b320: while the robot talks the screen texture scrolls 127 texels per step, 6 steps down and back.
+			_robotUV += dt;
+			if (_robotUV >= 0xb) {
+				_robotUV = 0;
+				const int ecran = _model.findNode("ecran");
+				if (ecran >= 0) {
+					_model.shiftNodeUV(ecran, 0.0f, _robotUVDir ? 127.0f : -127.0f, false);
+					_robotUVStep += _robotUVDir ? 1 : -1;
+					if (_robotUVDir && _robotUVStep == 6)
+						_robotUVDir = 0;
+					else if (!_robotUVDir && _robotUVStep == 0)
+						_robotUVDir = 1;
+				}
+			}
+		}
+		// TickMusee (decomp 17893): with the ending flag set, walking down the hall to z <= 0xdab plays "fin".
+		if (s.isSet(kOfsEnding) && !_finRequest && (int16)_pos[2] <= 0xdab)
+			_finRequest = true;
+		break;
+
+	case kSceneCafe:
+		// Clock (cb 0x417cd0): every 200 ticks the hands texture steps; the third step rings and makes it pickable.
+		_clockTimer += dt;
+		if (_clockTimer - _clockLast >= 200 && _clockEnable && !s.isSet(kCfClockTaken)) {
+			_clockState++;
+			_clockLast = _clockTimer;
+			const int orloge = _model.findNode("orloge");
+			if (orloge >= 0) {
+				if (_clockState == 1) {
+					_model.shiftNodeUV(orloge, 128.0f, 0.0f, false);
+				} else if (_clockState == 2) {
+					_model.shiftNodeUV(orloge, -128.0f, 128.0f, false);
+				} else if (_clockState == 3) {
+					_model.shiftNodeUV(orloge, 128.0f, 0.0f, false);
+					_clockEnable = false;
+					playSound("pendule");
+					setObjectType("orloge", 2);
+				}
+			}
+		}
+		mirrorTick();
+		break;
+
+	case kSceneMangeurs:
+		mangeursTick(dt);
+		break;
+
+	case kSceneMaisonet:
+		// Hen: she runs off when you get within 2000; the bird flies off when you get within 5000 of the nest.
+		if (!_anims[0].active && _anims[0].elapsed == 1 && !s.isSet(kMeHenFled) && objectDistance("poule") < 2000.0f) {
+			startAnim(0);
+			playSound("poule");
+		}
+		if (!_anims[2].active && !_anims[3].active && !s.isSet(kMeBirdFlew) && objectDistance("nid") < 5000.0f) {
+			playSound("oiseau");
+			startAnim(2);
 		}
 		break;
 
@@ -1206,6 +1321,588 @@ void World::sceneTick(int dt) {
 }
 
 // ---------------------------------------------------------------------------
+// Textures (sub_43ded0 registrations, sub_43c0b0 swaps).
+
+void World::registerTextures(const BFGFile &bfg) {
+	struct Alias {
+		const char *name, *file;
+	};
+	static const char *const kMusee[] = {
+		"ROBI3", "ROBI3N", "RVBTERRA", "RVBMAISO", "RVBCAFE", "RVBPONT", "RVBPATAT", "RVBCHAMB", "RVBPOSTE",
+		"RVBHOSTO", "RVBMANGE", "RVBCHAMP", "RVBJARDI", "RVBEGLIS", nullptr
+	};
+	static const char *const kCafe[] = { "MIRROIR1", "MIRROIR2", "MIRROIR3", "MIRROIRG", nullptr };
+	static const Alias kMaisonj[] = {
+		{ "WMAP01", "WMJ01" }, { "WMAP02", "WMJ02" }, { "BMAP01", "BMJ01" }, { "BMAP02", "BMJ02" },
+		{ "JMAP01", "JMJ01" }, { "JMAP02", "JMJ02" }
+	};
+
+	switch (_scene) {
+	case kSceneMusee:
+		for (const char *const *n = kMusee; *n; n++)
+			_model.registerTexture(bfg, *n, *n);
+		break;
+	case kSceneCafe:
+		for (const char *const *n = kCafe; *n; n++)
+			_model.registerTexture(bfg, *n, *n);
+		break;
+	case kSceneMaisonj:
+		for (uint i = 0; i < ARRAYSIZE(kMaisonj); i++)
+			_model.registerTexture(bfg, kMaisonj[i].name, kMaisonj[i].file);
+		break;
+	default:
+		break;
+	}
+}
+
+void World::yellowHouse() {
+	_model.retexture("WMAP01", "JMAP01");
+	_model.retexture("WMAP02", "JMAP02");
+}
+
+/** The cafe mirror: its texture follows the camera's z (decomp 11167-11194); only the middle band is a puzzle. */
+void World::mirrorTick() {
+	const int z = (int16)_pos[2];
+	const char *tex;
+	int type = 255;
+	if (z > 0xaf0)
+		tex = "MIRROIR3";
+	else if (z > 0x8fc)
+		tex = "MIRROIR2";
+	else if (z > 0x7d0)
+		tex = "MIRROIR1";
+	else if (z > 0x320) {
+		tex = "MIRROIRG";
+		type = _state.puzzleSolved(6) ? 0x3c : 3;
+	} else if (z > 0x1f4)
+		tex = "MIRROIR1";
+	else if (z > 0x71)
+		tex = "MIRROIR2";
+	else
+		tex = "MIRROIR3";
+	if (scumm_stricmp(tex, _mirrorTex) != 0) {
+		_model.retexture(_mirrorTex, tex);
+		Common::strlcpy(_mirrorTex, tex, sizeof(_mirrorTex));
+	}
+	setObjectType("mirroir", type);
+}
+
+// ---------------------------------------------------------------------------
+// Mangeurs (sub_41f9f0 tail, decomp 13498-13545).
+
+void World::closeMangeursWindow() {
+	_mgWindowRt = true;
+	playSound("chaise");
+	stopSoundNamed("bebe");
+	stopSoundNamed("fenclaq");
+	startAnim(3);
+	_state.set(kMgWindowClosed, 1);
+	setObjectType("bersso", 3);
+	setObjectType("fenetre", 255);
+}
+
+void World::mangeursTick(int dt) {
+	GameState &s = _state;
+	// The baby starts to cry after 0x33 ticks and wakes up the window.
+	if (_mgTick >= 0x33 && !_mgCrying && _mgCoucou && !s.isSet(kMgKettleTaken)) {
+		setObjectType("fenetre", 4);
+		playSound("bebe", true);
+		_mgCrying = true;
+	}
+	// ...which closes by itself after 0x1f5 ticks if nobody does it.
+	if (_mgCrying && !_mgWindowRt) {
+		_mgCry += dt;
+		if (_mgCry >= 0x1f5)
+			closeMangeursWindow();
+	}
+	_mgTick += dt;
+	_mgBoil += dt;
+	// The kettle boils 0x97 ticks after the fire is lit.
+	if (_mgBoil >= 0x97 && s.isSet(kMgFireLit) && !s.isSet(kMgKettleTaken) && objectType("theieres") != 2) {
+		showObj("vapeur");
+		playSound("bouilloi", true);
+		setObjectType("theieres", 2);
+	}
+	// Fire flicker (sub_41f0e0: u += 85) and steam (sub_41f130: u += 64), masked to the texture.
+	const int fire = _model.findNode("fire");
+	if (fire >= 0)
+		_model.shiftNodeUV(fire, 85.0f, 0.0f, true);
+	const int vapeur = _model.findNode("vapeur");
+	if (vapeur >= 0)
+		_model.shiftNodeUV(vapeur, 64.0f, 0.0f, true);
+}
+
+// ---------------------------------------------------------------------------
+// Clicks.
+
+namespace {
+
+bool is(const char *a, const char *b) {
+	return scumm_stricmp(a, b) == 0;
+}
+
+bool isRobotPart(const char *name) {
+	for (const char *const *p = kRobotParts; *p; p++) {
+		if (is(name, *p))
+			return true;
+	}
+	return false;
+}
+
+}
+
+void World::launchPage(const char *name) {
+	const int page = Page::launcherPage(_scene, name);
+	if (page >= 0)
+		_pageRequest = page;
+}
+
+void World::stopSoundNamed(const char *name) {
+	if (!g_engine || !g_engine->_sound)
+		return;
+	const uint16 h = g_engine->_sound->load(name);
+	if (h)
+		g_engine->_sound->stop(h);
+}
+
+void World::saveCheckpoint() {
+	// sub_4011e0 -> sub_433580: the exe's GAME save after a placement.
+	if (g_engine)
+		g_engine->autosaveAfterPlacement(-1);
+}
+
+void World::startCarry(const char *name, int cursor) {
+	// dat_54d864 = 1; dat_54dc00 = node; the node is hidden and the pointer becomes the object.
+	hideObj(name);
+	_carry = cursor;
+	Common::strlcpy(_carryName, name, sizeof(_carryName));
+}
+
+/** A click while a scene object is carried (the "dat_54d864 == 1" branches of the scene ticks). */
+void World::onCarryClick(const char *name) {
+	GameState &s = _state;
+	const int carry = _carry;
+	char obj[sizeof(_carryName)];
+	Common::strlcpy(obj, _carryName, sizeof(obj));
+	_carry = kCarryNone;
+	debug("Vangogh: carrying %s, click on '%s'", obj, name);
+
+	bool used = false;
+	switch (_scene) {
+	case kSceneMangeurs:
+		if (is(name, "fire") && carry == kCursorFagot) {
+			// Kindling in the hearth.
+			playSound("finfeu");
+			s.set(kMgKindlingPlaced, 1);
+			const int fire = _model.findNode("fire");
+			if (fire >= 0)
+				_model.shiftNodeUV(fire, 0.0f, 85.0f, false);	// sub_41f0b0
+			setObjectType("buche", 4);
+			saveCheckpoint();
+			used = true;
+		} else if (is(name, "fire") && carry == kCursorBuche) {
+			// The log lights the fire; the kettle starts to boil.
+			playSound("feu", true);
+			s.set(kMgLogPlaced, 1);
+			s.set(kMgFireLit, 1);
+			_mgBoil = 0;
+			saveCheckpoint();
+			used = true;
+		}
+		break;
+	case kSceneCafe:
+		if (is(name, "barporte") && carry == kCursorKey) {
+			playSound("serrure");
+			startAnim(1);
+			s.set(kCfDoorOpen, 1);
+			saveCheckpoint();
+			used = true;
+		}
+		break;
+	case kScenePont:
+		if (is(name, "pouli03") && carry == kCursorCrank) {
+			showObj("poignee02");
+			if (!s.isSet(kPoBridgeDown) && !_anims[0].active) {
+				playSound("pontlev2");
+				startAnim(0);
+				saveCheckpoint();
+			}
+			s.set(kPoHandleMounted, 1);
+			used = true;
+		}
+		break;
+	default:
+		break;
+	}
+	if (!used)
+		showObj(obj);	// sub_43bc90: the object goes back where it was
+}
+
+/** What picking an object up changes besides its flag (the exe's per-object pickup branches). */
+void World::pickupEffects(const char *name) {
+	GameState &s = _state;
+	switch (_scene) {
+	case kSceneMusee:
+		if (is(name, "etoile")) {
+			// dat_4f96f8 = 1 (vase live), dat_4f9f78 = 0xa6 (the star anim resumes), vase type 3.
+			s.set(kOfsVaseEnabled, 1);
+			setObjectType("vase", 3);
+			if (_anims[0].loaded) {
+				_anims[0].elapsed = 0xa6;
+				_anims[0].active = true;
+			}
+		}
+		break;
+	case kSceneChambre:
+		if (is(name, "Object09"))
+			setObjectType("TIROIR", 4);
+		break;
+	case kSceneCafe:
+		if (is(name, "orloge")) {
+			stopSoundNamed("pendule");
+			stopSoundNamed("tictac");
+		}
+		break;
+	case kSceneMangeurs:
+		if (is(name, "theieres"))
+			stopSoundNamed("bouilloi");
+		break;
+	case kSceneTerrasse:
+		if (is(name, "platode")) {
+			hideObj("de");
+			setObjectType("platode", 255);
+		}
+		break;
+	case kSceneChamp:
+		if (is(name, "gun")) {
+			playSound("pistolet");
+			startAnim(0);
+			playSound("corbeaux");
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+bool World::sceneClick(const char *name, int type, float dist) {
+	GameState &s = _state;
+	switch (_scene) {
+	case kSceneMusee:
+		if (is(name, "vase")) {
+			if (s.isSet(kOfsVaseEnabled) && !s.puzzleSolved(0))
+				launchPage(name);
+			return true;
+		}
+		if (isRobotPart(name)) {
+			if (!_timer[0] && !s.isSet(kOfsRobotOff)) {
+				// The robot greets on demand: a50_01, then a50_01c.
+				if (g_engine && g_engine->_sound) {
+					_voice = g_engine->_sound->load("_a50_01");
+					if (_voice)
+						g_engine->_sound->play(_voice, false);
+				}
+				_timer[0] = 1;
+				_timer[1] = 1;
+				setTypes(255, kRobotParts);
+			}
+			return true;
+		}
+		return false;
+
+	case kSceneAuberge:
+		if (is(name, "saccoche") || is(name, "sac") || is(name, "sac01")) {
+			if (!_anims[0].active && !s.isSet(kAuBagOpen)) {
+				const char *const bag[] = { "saccoche", "sac", "sac01", nullptr };
+				setTypes(255, bag);
+				startAnim(0);
+			}
+			return true;
+		}
+		if (is(name, "portebas") && type == 6) {
+			startAnim(2);
+			setObjectType("portebas", 255);
+			return true;
+		}
+		if (is(name, "portehaut") && type == 6) {
+			// The exe clears the portebas type here, not portehaut's (asm 0x42183d); the stepper clears portehaut's.
+			if (!_anims[1].active)
+				startAnim(1);
+			setObjectType("portebas", 255);
+			return true;
+		}
+		return false;
+
+	case kSceneHopiext:
+		if (is(name, "cloche") || is(name, "korde1") || is(name, "korde2") || is(name, "korde3") || is(name, "korde4")) {
+			if (!s.isSet(kHxGridOpen)) {
+				startAnim(1);
+				playSound("cloche");
+				s.set(kHxGridOpen, 1);
+			}
+			return true;
+		}
+		if (is(name, "grilledrt") || is(name, "grillegche")) {
+			if (!s.isSet(kHxGridOpen)) {
+				startAnim(0);
+				s.set(kHxGridOpen, 1);
+			}
+			return true;
+		}
+		if (is(name, "arbre11")) {
+			if (dist < 1500.0f)
+				launchPage(name);
+			return true;
+		}
+		return false;
+
+	case kSceneHopiint:
+		if (is(name, "ARMOIRE")) {
+			if (!s.isSet(kHiWardrobeOpen) && !_anims[0].active) {
+				playSound("armoire");
+				startAnim(0);
+			}
+			return true;
+		}
+		return false;
+
+	case kSceneMaisonet:
+		if (is(name, "pelle")) {
+			if (!s.isSet(kMeDigDone) && !_anims[1].active) {
+				playSound("pelle");
+				startAnim(1);
+				showObj("terre");
+			}
+			return true;
+		}
+		if (is(name, "terre") || is(name, "plume")) {
+			pickUpObject(name);
+			return true;
+		}
+		return false;
+
+	case kSceneMangeurs:
+		if (is(name, "fagot")) {
+			if (type != 255)
+				startCarry("fagot", kCursorFagot);
+			return true;
+		}
+		if (is(name, "buche")) {
+			if (s.isSet(kMgKindlingPlaced))
+				startCarry("buche", kCursorBuche);
+			return true;
+		}
+		if (is(name, "fenetre")) {
+			if (type != 255 && !_mgWindowRt)
+				closeMangeursWindow();
+			return true;
+		}
+		if (is(name, "portepoel")) {
+			if (!s.isSet(kMgStoveOpen)) {
+				startAnim(4);
+				s.set(kMgStoveOpen, 1);
+				playSound("porpoel");
+			}
+			return true;
+		}
+		return false;
+
+	case kSceneCafe:
+		if (is(name, "ke")) {
+			if (!_billiardRt && !_anims[0].active && !s.isSet(kCfBilliardDone)) {
+				playSound("billiard");
+				startAnim(0);
+			}
+			return true;
+		}
+		if (is(name, "clef")) {
+			startCarry("clef", kCursorKey);
+			return true;
+		}
+		return false;
+
+	case kSceneChambre:
+		if (!s.get(kCbVariant)) {
+			if (is(name, "porte")) {
+				if (!s.isSet(kCbVDoorOpen) && !_anims[0].active) {
+					playSound("placard");
+					startAnim(0);
+				}
+				return true;
+			}
+			return false;
+		}
+		if (is(name, "CHAISE1")) {
+			if (!s.isSet(kCbChairMoved) && !_anims[0].active) {
+				playSound("chaiseVG");
+				startAnim(0);
+			}
+			return true;
+		}
+		if (is(name, "porte")) {
+			if (s.isSet(kCbChairMoved) && !s.isSet(kCbWardrobeOpen) && !_anims[4].active) {
+				playSound("placard");
+				startAnim(4);
+			}
+			return true;
+		}
+		if (is(name, "TIROIR")) {
+			if (s.isSet(kCbDrawerOpen))
+				launchPage(name);
+			else if (s.isSet(kCbObject09Taken) && !_anims[5].active) {
+				playSound("tiroir");
+				startAnim(5);
+			}
+			return true;
+		}
+		if (is(name, "papierferm")) {
+			if (!s.isSet(kCbPaperOpen) && !_anims[3].active) {
+				startAnim(3);
+				if (g_engine && g_engine->_sound) {
+					_voice = g_engine->_sound->load("_sm03_012");
+					if (_voice)
+						g_engine->_sound->play(_voice, false);
+				}
+			}
+			return true;
+		}
+		if (is(name, "shoes") || is(name, "shoes01") || is(name, "Object06") || is(name, "Object10")) {
+			if (s.isSet(kCbShoesEnabled))
+				pickUpObject("shoes");
+			return true;
+		}
+		return false;
+
+	case kSceneMaisonj:
+		if (is(name, "pot01")) {
+			if (!s.isSet(kMjRainSeen)) {
+				s.set(kMjSnailReleased, 1);
+				showObj("escargot");
+				s.set(kMjRainSeen, 1);
+				startAnim(0);
+				setObjectType("pot02", 4);
+			}
+			if (!s.isSet(kMjYellowDone)) {
+				// The rain: a movie, then the same world again (the exe's mode 2, dat_5e3e30 = 2).
+				const Pose3D here = pose();
+				if (playClip("pluie", kSceneMaisonj, _prevScene)) {
+					_clipKeepPose = true;
+					_clipPose = here;
+				}
+			}
+			return true;
+		}
+		if (is(name, "pot02")) {
+			if (s.isSet(kMjRainSeen)) {
+				yellowHouse();
+				s.set(kMjYellowDone, 1);
+				s.set(kCbVariant, 1);
+				setObjectType("pot01", 255);
+				setObjectType("pot02", 255);
+			}
+			return true;
+		}
+		if (is(name, "portail") || is(name, "portail01")) {
+			if (!s.isSet(kMjGateOpen) && !_anims[2].active) {
+				playSound("portail01");
+				startAnim(2);
+			}
+			return true;
+		}
+		if (is(name, "portemj")) {
+			if (!s.isSet(kMjDoorOpen) && !_anims[3].active) {
+				playSound("placard");
+				startAnim(3);
+			}
+			return true;
+		}
+		if (is(name, "escargot")) {
+			pickUpObject(name);
+			return true;
+		}
+		return false;
+
+	case kScenePont:
+		if (is(name, "trappe")) {
+			if (!s.isSet(kPoTrapOpen) && !_anims[1].active) {
+				playSound("trappe");
+				startAnim(1);
+			}
+			return true;
+		}
+		if (is(name, "pouli02")) {
+			if (!_anims[0].active && !s.isSet(kPoBridgeDown)) {
+				// sub_41d590 ShowHandleMounted: the crank is not needed.
+				showObj("poignee02");
+				hideObj("poignee04");
+				setObjectType("pouli03", 255);
+				setObjectType("pouli02", 255);
+				s.set(kPoHandleMounted, 1);
+				playSound("pontlev2");
+				startAnim(0);
+			}
+			return true;
+		}
+		if (is(name, "poignee04")) {
+			startCarry("poignee04", kCursorCrank);
+			return true;
+		}
+		return false;
+
+	case kSceneTerrasse:
+		if (is(name, "MANIVELLE")) {
+			if (!s.isSet(kTeStoreUp) && !_anims[0].active) {
+				startAnim(0);
+				playSound("store");
+			}
+			return true;
+		}
+		if (is(name, "drapo")) {
+			if (s.isSet(kTeStoreUp))
+				launchPage(name);
+			return true;
+		}
+		return false;
+
+	case kSceneJardin:
+		if (is(name, "cerf")) {
+			if (!s.isSet(kJaKiteFlown)) {
+				startAnim(1);
+				playSound("clochjar");
+				s.set(kJaKiteFlown, 1);
+				s.set(kEgKiteAway, 0);
+			}
+			return true;
+		}
+		if (is(name, "barriere")) {
+			if (type == 4 && !_anims[0].active) {
+				startAnim(0);
+				playSound("barriere");
+			}
+			return true;
+		}
+		return false;
+
+	case kSceneChamp:
+		if (is(name, "faux")) {
+			if (!s.isSet(kChScytheDone) && !_anims[1].active) {
+				startAnim(1);
+				playSound("faux");
+			}
+			return true;
+		}
+		if (is(name, "gun")) {
+			pickUpObject(name);
+			return true;
+		}
+		return false;
+
+	default:
+		return false;
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Arrival and departure clips.
 
 bool World::arrivalClip(int scene, char *name, size_t size) const {
@@ -1226,6 +1923,7 @@ bool World::playClip(const char *name, int thenScene, int thenPrev) {
 		return false;
 	}
 	_clipActive = true;
+	_clipKeepPose = false;
 	_clipScene = thenScene;
 	_clipPrev = thenPrev;
 	_hoverObject = -1;
@@ -1246,6 +1944,10 @@ void World::endClip() {
 	_clip.close();
 	_clipActive = false;
 	changeScene(_clipScene, _clipPrev);
+	if (_clipKeepPose) {
+		_clipKeepPose = false;
+		setPose(_clipPose);
+	}
 }
 
 void World::startPaintingClick(int dest) {

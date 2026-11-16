@@ -328,6 +328,27 @@ void Renderer3D::nodeViewPos(uint node, float out[3]) const {
 		out[k] = _nodeP[node * 3 + k];
 }
 
+bool Renderer3D::nodeViewCentroid(const Model3D &model, uint node, float out[3]) const {
+	if (_view.size() != model.numVertices())
+		return false;
+	const Model3D::Vertex *verts = model.vertices();
+	double sum[3] = { 0.0, 0.0, 0.0 };
+	uint n = 0;
+	for (uint i = 0; i < model.numVertices(); i++) {
+		if (verts[i].node != node)
+			continue;
+		sum[0] += _view[i].x;
+		sum[1] += _view[i].y;
+		sum[2] += _view[i].z;
+		n++;
+	}
+	if (!n)
+		return false;
+	for (int k = 0; k < 3; k++)
+		out[k] = (float)(sum[k] / n);
+	return true;
+}
+
 void Renderer3D::rasterTriangle(const ScreenV &a, const ScreenV &b, const ScreenV &c, int type,
 		const uint16 *pal, const byte *tex, uint16 flat) {
 	const float d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);

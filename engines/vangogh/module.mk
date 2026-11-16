@@ -14,10 +14,16 @@ MODULE_OBJS = \
 	movietable.o \
 	cvy.o \
 	clip.o \
+	ending.o \
 	scenelogic.o \
 	renderer3d.o \
 	world.o \
 	page.o \
+	pagegames.o \
+	pagegames_p2_p4_p7.o \
+	pagegames_p8_p10.o \
+	pagegames_p13_p15_p16.o \
+	pagegames_p18_p20_p24.o \
 	inventory.o \
 	sound.o \
 	hnmplayer.o \

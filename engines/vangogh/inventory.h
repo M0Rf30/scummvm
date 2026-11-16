@@ -69,6 +69,8 @@ public:
 	int width(uint i = 0) const { return loaded() ? cell(i).w : 0; }
 	int height(uint i = 0) const { return loaded() ? cell(i).h : 0; }
 	Mode mode() const { return _mode; }
+	/** Cell @p i as width*height 0xAARRGGBB pixels (alpha 0 = transparent). */
+	const uint32 *argb(uint i = 0) const { return cell(i).px.begin(); }
 
 	/** Draws cell @p i according to the sprite's placement mode (see Mode). */
 	void blit(Graphics::Surface &dst, uint i, int x, int y) const;

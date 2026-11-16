@@ -26,6 +26,8 @@
 #include "common/debug.h"
 #include "common/util.h"
 
+#include <math.h>
+
 namespace Vangogh {
 
 namespace {
@@ -78,6 +80,68 @@ void Model3D::clear() {
 	_lists.clear();
 	_palettes.clear();
 	_textures.clear();
+	_registered.clear();
+}
+
+bool Model3D::registerTexture(const BFGFile &bfg, const char *name, const char *file) {
+	for (uint i = 0; i < _registered.size(); i++) {
+		if (!scumm_stricmp(_registered[i].name, name))
+			return true;
+	}
+	RegisteredTexture t;
+	Common::strlcpy(t.name, name, sizeof(t.name));
+	t.bank = loadBank(bfg, file);
+	if (t.bank < 0) {
+		warning("Vangogh: texture record %s.3DM is missing", file);
+		return false;
+	}
+	_registered.push_back(t);
+	return true;
+}
+
+uint Model3D::retexture(const char *from, const char *to) {
+	int32 bank = -1;
+	for (uint i = 0; i < _registered.size(); i++) {
+		if (!scumm_stricmp(_registered[i].name, to))
+			bank = _registered[i].bank;
+	}
+	if (bank < 0) {
+		// A material of the model itself: borrow the bank of any list that already carries that name.
+		for (uint i = 0; i < _lists.size() && bank < 0; i++) {
+			if (!scumm_stricmp(_lists[i].key, to))
+				bank = _lists[i].bank;
+		}
+	}
+	if (bank < 0) {
+		warning("Vangogh: retexture: texture '%s' is not registered", to);
+		return 0;
+	}
+	uint n = 0;
+	for (uint i = 0; i < _lists.size(); i++) {
+		FaceList &fl = _lists[i];
+		if (fl.type == kFlat || scumm_stricmp(fl.key, from))
+			continue;
+		fl.bank = bank;
+		Common::strlcpy(fl.key, to, sizeof(fl.key));
+		n++;
+	}
+	return n;
+}
+
+void Model3D::shiftNodeUV(uint node, float du, float dv, bool wrap) {
+	if (node >= _nodes.size())
+		return;
+	const Node &n = _nodes[node];
+	for (uint i = 0; i < n.uvCount; i++) {
+		float &u = _uvs[(n.uvFirst + i) * 2];
+		float &v = _uvs[(n.uvFirst + i) * 2 + 1];
+		u += du;
+		v += dv;
+		if (wrap) {
+			u -= 256.0f * floorf(u / 256.0f);
+			v -= 256.0f * floorf(v / 256.0f);
+		}
+	}
 }
 
 int Model3D::findNode(const char *name) const {
@@ -232,6 +296,8 @@ bool Model3D::parse(const Common::Array<byte> &rec, const BFGFile &bfg) {
 		}
 
 		const uint32 nuv = b.u32(o + 0x84), uvp = b.ptr(o + 0x88);
+		n.uvFirst = _uvs.size() / 2;
+		n.uvCount = nuv;
 		if (nuv) {
 			if (!b.has(uvp, nuv * kUVSize) || (uvp & 3)) {
 				warning("Vangogh: node '%s' UV array out of range", n.name);
@@ -299,6 +365,7 @@ bool Model3D::parse(const Common::Array<byte> &rec, const BFGFile &bfg) {
 			}
 
 			const bool flat = (fl.type == kFlat);
+			Common::strlcpy(fl.key, mat >= 0 ? mats[mat].key : name, sizeof(fl.key));
 			if (mat >= 0) {
 				if (flat) {
 					fl.color = mats[mat].color;

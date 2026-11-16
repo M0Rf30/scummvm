@@ -34,6 +34,7 @@
 #include "graphics/screen.h"
 
 #include "vangogh/detection.h"
+#include "vangogh/ending.h"
 #include "vangogh/page.h"
 #include "vangogh/world.h"
 #include "vangogh/sound.h"
@@ -86,9 +87,12 @@ private:
 	bool openPage(World &world, int page);
 	/** Frame period of the current mode in milliseconds. */
 	uint32 framePeriod() const;
+	/** What is on screen: the ending, the open page, or the world. */
+	const Graphics::Surface &frameSurface(const World &world) const;
 
 	World *_world;
 	Page *_page;
+	Ending _ending;		///< the end of the game (movies, credits, quit); active() once started
 
 	// Saves (see vangogh.cpp). Payload: "VGSV", version, resume flag, then GameState::sync.
 	bool _pageOpen;				///< a 2D page is open (set by the page code): saves record resume flag 1
@@ -157,6 +161,8 @@ public:
 
 	/** The running World, or null outside runWorld()/runScript() (used by the console). */
 	World *world() const { return _world; }
+	/** The ending sequence (the console and the script harness start and inspect it). */
+	Ending &ending() { return _ending; }
 
 	/**
 	 * Gets a random number

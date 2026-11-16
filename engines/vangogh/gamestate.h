@@ -136,6 +136,9 @@ enum StateOffset {
 	kCbPaperOpen = 0x4f9858 - kStateBase,
 	kCbMirrorBroken = 0x4f985c - kStateBase,
 	kCbShoesEnabled = 0x4f9860 - kStateBase,
+	kCbPillowDoneA = 0x4f9864 - kStateBase,		///< set with B when the pillow page (7) is left; never read
+	kCbPillowDoneB = 0x4f9868 - kStateBase,
+	kCbMirrorSoundPlayed = 0x4f986c - kStateBase,	///< the break sound of the mirror was played once
 	// terrasse
 	kTeDieTaken = 0x4f9878 - kStateBase,
 	kTeGlassesTaken = 0x4f987c - kStateBase,
@@ -218,6 +221,12 @@ public:
 	uint32 pageDone[kNumPuzzles];
 	uint32 itemPlaced[kNumItems];
 	int32 groupCounter[kNumGroups];
+
+	/**
+	 * dat_52a77c (not saved): page 11 was left while the mirror sound had not been played yet; the chambre init plays
+	 * "miroir" once and sets kCbMirrorSoundPlayed.
+	 */
+	bool mirrorSoundPending;
 
 private:
 	uint32 _block[kBlockSize / 4];

@@ -61,9 +61,30 @@ enum SceneId {
 
 const int kSphereRadius = 185;		///< sub_425d30: camera collision sphere
 const float kPickRange = 1200.0f;	///< dat_4eee84: museum click/hover distance
+const int kRetourX = 10;			///< the retour button: left edge,
+const int kRetourBottom = 0x1da;	///< and bottom edge (decomp 16927)
 
 /** Cursor kinds used outside the cursor table code (the exe's cursor table indices). */
 enum { kCursorArrow = 0, kCursorFinger = 11 };
+
+/**
+ * The 3D world's own cursors, loaded from data/graphs_2d (the exe's cursor ids 0x26..0x28, 0x3a..0x40 of its cursor
+ * table): the hand over pickups, the frame over puzzle launchers, the finger over interactions, the arrow over doors,
+ * the "already seen" marker over solved puzzles, the closed hand and the carried objects. They follow the curseurs.spr kinds.
+ */
+enum {
+	kCursorHand = 14,		///< main.tga: type 2 pickups
+	kCursorPuzzle,			///< curza.tga: type 3 puzzle launchers
+	kCursorPoint,			///< curdoigt.tga: type 4 interactions and the retour corner
+	kCursorDoor,			///< acces.tga: type 6 doors
+	kCursorSolved,			///< deja-vu.tga: type 0x3c solved puzzles
+	kCursorGrab,			///< curferme.tga: carrying an object
+	kCursorFagot,
+	kCursorBuche,
+	kCursorKey,
+	kCursorCrank,
+	kNumCursorKinds
+};
 
 /** Per-frame input, already mapped from ScummVM events by the engine (the exe reads DirectInput scancodes). */
 struct WorldInput {
@@ -124,6 +145,11 @@ public:
 	Pose3D pose() const;
 	/** Teleports the camera (debug); angles are masked to 12 bits. */
 	void setPose(const Pose3D &p);
+	/**
+	 * Test aid (script command "aim"): puts the camera @p dist units from the origin of node @p name, on the line
+	 * towards the current camera, looking straight at it, so that a real pick at the screen centre can hit it.
+	 */
+	bool aimAt(const char *name, int dist);
 
 	/** Name of the pickable object under the mouse as of the last frame ("" if none). */
 	const char *hoverName() const { return _hoverName; }
@@ -133,6 +159,8 @@ public:
 	void updateCursor();
 	/** Cursor frame as a CLUT8 cell, for compositing screenshots. Hot spot is at (w/2+hotX, h/2+hotY). */
 	bool cursorImage(int kind, const byte *&pixels, int &w, int &h, int &hotX, int &hotY, const byte *&palette) const;
+	/** Draws cursor @p kind with its pointer tip at (x, y) into @p dst (any cursor kind, for screenshots). */
+	void drawCursor(Graphics::Surface &dst, int kind, int x, int y) const;
 
 	/** Number of frames left in a museum painting glide (0 = none). */
 	int glideFrames() const { return _glideLeft; }
@@ -220,9 +248,11 @@ public:
 	void setCursor(int kind);
 	/** Leaves the scene for the museum (Backspace): plays the "r" clip first if the scene's puzzles are all solved. */
 	void leaveToMuseum();
+	/** True once after the museum tick asked for the `fin` movie (ending flag set, camera z <= 0xdab, flow.md 4.5). */
+	bool takeFinRequest();
 
 private:
-	enum { kMaxObjects = 32, kNumCursors = 14 };
+	enum { kMaxObjects = 32, kNumCursors = 14, kNumExtCursors = kNumCursorKinds - kNumCursors };
 
 	struct Cursor {
 		Common::Array<byte> pixels;
@@ -235,6 +265,9 @@ private:
 	void pickAndAct(const WorldInput &in);
 	bool checkCameraExits();
 	void onObjectClick(const char *name, int type, float distance);
+	/** A click on @p name while the carried scene object (kCarry*) is in hand. */
+	void onCarryClick(const char *name);
+	bool retourHot(int x, int y) const;
 	bool pickUpObject(const char *name);
 	void composeOverlay(int mouseX, int mouseY);
 	void startPaintingClick(int dest);
@@ -249,6 +282,20 @@ private:
 	void loadAnims(const BFGFile &bfg);
 	void loadSounds();
 	void sceneTick(int dt);
+	/** Per-scene click actions (world.md "ACTION DISPATCH" tables); true if @p name was handled. */
+	bool sceneClick(const char *name, int type, float distance);
+	/** What picking up @p name changes besides the flag and the inventory (the exe's pickup branches). */
+	void pickupEffects(const char *name);
+	void registerTextures(const BFGFile &bfg);
+	void startCarry(const char *name, int cursor);
+	void stopSoundNamed(const char *name);
+	void saveCheckpoint();
+	void mirrorTick();
+	void yellowHouse();
+	void mangeursTick(int dt);
+	void closeMangeursWindow();
+	/** Opens the 2D page behind the launcher object @p name (sets the page request). */
+	void launchPage(const char *name);
 	void animDone(uint i);
 	bool arrivalClip(int scene, char *name, size_t size) const;
 	void stepClip(const WorldInput &in);
@@ -327,6 +374,20 @@ private:
 	uint _numAnims;
 
 	// Runtime (not saved) scene state: the exe's 698fxx globals.
+	enum { kCarryNone = -1 };
+	int _carry;			///< kCarryNone or the cursor kind of the carried scene object (dat_54d864/dat_54dc00)
+	char _carryName[14];
+	int _clockTimer, _clockLast, _clockState;	///< cafe clock (dat_698fcc/c8/d0)
+	bool _clockEnable;							///< dat_4f5ba8
+	bool _billiardRt;							///< dat_698fb8: the billiard animation has finished this visit
+	char _mirrorTex[10];						///< dat_698fe0: the texture currently on the cafe mirror
+	int _mgTick, _mgCry, _mgBoil;				///< mangeurs tick, cry and boil timers (698f48/58/64)
+	bool _mgCrying, _mgWindowRt, _mgCoucou;		///< 698f5c / 698f60 / 698f68
+	int _robotTalk, _robotUV, _robotUVDir, _robotUVStep;	///< museum ecran: talking flag, tick accumulator, ping-pong state
+	bool _finRequest;
+	bool _retourShown;	///< the retour button is up this frame
+	UISprite _ext[kNumExtCursors];
+	UISprite _retour;
 	int _framesInScene;	///< frames rendered since entry, proximity checks need a valid view position
 	int _timer[3];		///< scene tick timers: butterflies (jardin), robot dialogue state and voice index (musee)
 	int _timerLimit;	///< jardin butterfly switch threshold
@@ -337,6 +398,8 @@ private:
 	MovieClip _clip;
 	bool _clipActive;
 	int _clipScene, _clipPrev;
+	bool _clipKeepPose;	///< the clip returns to the same camera pose (the rain movie), not to the arrival pose
+	Pose3D _clipPose;
 };
 
 } // End of namespace Vangogh

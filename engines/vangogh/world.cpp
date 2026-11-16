@@ -335,6 +335,19 @@ World::World() : _box(0), _scene(-1), _prevScene(0), _groundProbe(500), _mouseLo
 		_voice(0), _trainSound(false), _clipActive(false), _clipScene(0), _clipPrev(0) {
 	buildTrig();
 	memset(_timer, 0, sizeof(_timer));
+	_carry = kCarryNone;
+	_carryName[0] = '\0';
+	_clockTimer = _clockLast = _clockState = 0;
+	_clockEnable = false;
+	_billiardRt = false;
+	_clipKeepPose = false;
+	Common::strlcpy(_mirrorTex, "MIRROIRG", sizeof(_mirrorTex));
+	_mgTick = _mgCry = _mgBoil = 0;
+	_mgCrying = _mgWindowRt = _mgCoucou = false;
+	_robotTalk = _robotUV = _robotUVStep = 0;
+	_robotUVDir = 1;
+	_finRequest = false;
+	_retourShown = false;
 	for (int i = 0; i < kMaxAnims; i++) {
 		_anims[i].file = _anims[i].node = nullptr;
 		_anims[i].elapsed = 1;
@@ -393,8 +406,42 @@ bool World::init() {
 		cell->free();
 		delete cell;
 	}
+	static const char *const kExtNames[kNumExtCursors] = {
+		"main", "curza", "curdoigt", "acces", "deja-vu", "curferme", "fagot", "buche", "cle", "manivel"
+	};
+	for (int k = 0; k < kNumExtCursors; k++) {
+		if (!_ext[k].loadTga(kExtNames[k]))
+			return false;
+	}
+	if (!_retour.loadTga("retour"))
+		return false;
 	_cursorsReady = true;
 	return true;
+}
+
+void World::drawCursor(Graphics::Surface &dst, int kind, int x, int y) const {
+	if (kind >= kNumCursors && kind < kNumCursorKinds) {
+		// graphs_2d cursors are drawn with their top-left corner at the pointer (sub_40164f at dat_4f9540/44).
+		_ext[kind - kNumCursors].blit(dst, 0, x, y);
+		return;
+	}
+	const byte *pixels, *palette;
+	int w, h, hx, hy;
+	if (!cursorImage(kind, pixels, w, h, hx, hy, palette))
+		return;
+	for (int j = 0; j < h; j++) {
+		for (int i = 0; i < w; i++) {
+			const byte v = pixels[j * w + i];
+			const int px = x - hx + i, py = y - hy + j;
+			if (!v || px < 0 || py < 0 || px >= dst.w || py >= dst.h)
+				continue;
+			const uint32 c = dst.format.RGBToColor(palette[v * 3], palette[v * 3 + 1], palette[v * 3 + 2]);
+			if (dst.format.bytesPerPixel == 2)
+				*((uint16 *)dst.getBasePtr(px, py)) = (uint16)c;
+			else
+				*((uint32 *)dst.getBasePtr(px, py)) = c;
+		}
+	}
 }
 
 bool World::cursorImage(int kind, const byte *&pixels, int &w, int &h, int &hotX, int &hotY, const byte *&palette) const {
@@ -421,6 +468,13 @@ void World::updateCursor() {
 	}
 	if (hide || _shownKind == _cursorKind)
 		return;
+	if (_cursorKind >= kNumCursors) {
+		const UISprite &s = _ext[_cursorKind - kNumCursors];
+		const Graphics::PixelFormat argb = Graphics::PixelFormat::createFormatARGB32();
+		CursorMan.replaceCursor(s.argb(), s.width(), s.height(), 0, 0, 0, &argb);
+		_shownKind = _cursorKind;
+		return;
+	}
 	const byte *pixels, *palette;
 	int w, h, hx, hy;
 	if (!cursorImage(_cursorKind, pixels, w, h, hx, hy, palette))
@@ -487,6 +541,65 @@ void World::setPose(const Pose3D &p) {
 		_prevPos[k] = _pos[k];
 }
 
+bool World::aimAt(const char *name, int dist) {
+	const int n = _model.findNode(name);
+	if (n < 0)
+		return false;
+	// Node position in world space = camera + M * (view-space position of the last render), M = V^T.
+	float v[3];
+	if (!_renderer.nodeViewCentroid(_model, n, v))
+		_renderer.nodeViewPos(n, v);
+	const float ang = 2.0f * (float)M_PI / 4096.0f;
+	const float a = (float)(_rotA & 0xfff) * ang, b = (float)(_rotB & 0xfff) * ang;
+	const float sa = sinf(a), ca = cosf(a), sb = sinf(b), cb = cosf(b);
+	const float V[9] = { cb, 0.0f, -sb, sa * sb, ca, cb * sa, sb * ca, -sa, cb * ca };
+	float p[3];
+	for (int j = 0; j < 3; j++)
+		p[j] = (float)_pos[j] + V[j] * v[0] + V[3 + j] * v[1] + V[6 + j] * v[2];
+	// Try camera spots on rings around the node (nearest and straightest first) until the real pick at the screen
+	// centre returns the node, the camera survives collide() and nothing opaque is in the way.
+	const float ang2 = 2.0f * (float)M_PI / 4096.0f;
+	const int32 eyeY = _pos[1];
+	// The camera must sit on the walkable ground (ground follow decides its height, like movement() does) and the
+	// pitch is clamped to the exe's limit, so the search works on x/z rings only.
+	static const float kScale[8] = { 0.4f, 0.6f, 0.8f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f };
+	for (int s = 0; s < 8; s++) {
+		for (int k = 0; k < 48; k++) {
+			const float th = (float)k * (float)M_PI / 24.0f;
+			const float r = (float)dist * kScale[s];
+			Pose3D pose;
+			pose.x = (int32)(p[0] + cosf(th) * r);
+			pose.y = 0;
+			pose.z = (int32)(p[2] + sinf(th) * r);
+			if (pose.x != (int16)pose.x || pose.z != (int16)pose.z)
+				continue;
+			const int32 cam[3] = { pose.x, eyeY, pose.z };
+			int32 gy = eyeY;	// no ground under the probe: movement() leaves the height alone
+			_collision.groundY(cam, _groundProbe, gy);
+			pose.y = gy;
+			const float d[3] = { p[0] - (float)pose.x, p[1] - (float)pose.y, p[2] - (float)pose.z };
+			const float dl = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+			pose.rotA = CLIP((int32)lroundf(asinf(CLIP(-d[1] / dl, -1.0f, 1.0f)) / ang2), -kPitchLimit, kPitchLimit);
+			pose.rotB = (int32)lroundf(atan2f(d[0], d[2]) / ang2);
+			setPose(pose);
+			collide();
+			if (_pos[0] != pose.x || _pos[2] != pose.z)
+				continue;
+			Pose3D cp;
+			cameraPose(cp);
+			_renderer.render(_model, cp);
+			const int hit = _renderer.pick(_model, 320, 240, nullptr);
+			if (hit == n) {
+				debug("Vangogh: aim '%s': camera at %d,%d,%d rot %d,%d (ring %d, step %d)", name, _pos[0], _pos[1], _pos[2],
+					pose.rotA, pose.rotB, s, k);
+				return true;
+			}
+		}
+	}
+	debug("Vangogh: aim '%s': node at %.0f,%.0f,%.0f, no walkable spot with a clear pick", name, p[0], p[1], p[2]);
+	return false;
+}
+
 bool World::enterScene(int id, int prev) {
 	if (id < 0 || id >= kNumScenes)
 		return false;
@@ -512,7 +625,9 @@ bool World::enterScene(int id, int prev) {
 	_scene = id;
 	_prevScene = prev;
 	_renderer.bindModel(_model);
+	registerTextures(bfg);
 	loadAnims(bfg);
+	_carry = kCarryNone;
 
 	// Collision volumes. BOX.3DI is the default; the museum starts in BOX1 (SetBoxMusee(1)).
 	_collision.setActive(nullptr);
@@ -662,7 +777,23 @@ void World::frame(const WorldInput &in, float dt) {
 	WorldInput sceneIn = in;
 	if (consumed || _inv.carried() >= 0 || _inv.inBar(in.mouseX, in.mouseY))
 		sceneIn.click = false;
+
+	// The "retour" corner (decomp 7593, 16927, 16951): in a scene with the bar hidden and nothing in hand, the
+	// bottom-left corner shows a return button; a click there leaves like Backspace, before the scene sees it.
+	_retourShown = _scene != kSceneMusee && _inv.state() == Inventory::kHidden && _inv.carried() < 0 && _carry == kCarryNone
+		&& retourHot(in.mouseX, in.mouseY);
+	if (_retourShown) {
+		sceneIn.click = false;
+		if (in.click) {
+			debug("Vangogh: retour corner, leaving %s for the museum", sceneName(_scene).c_str());
+			_retourShown = false;
+			leaveToMuseum();
+			return;
+		}
+	}
 	pickAndAct(sceneIn);
+	if (_retourShown)
+		_cursorKind = kCursorPoint;
 	if (_inv.carried() >= 0)
 		_cursorKind = -1;
 	composeOverlay(in.mouseX, in.mouseY);
@@ -683,7 +814,7 @@ void World::frame(const WorldInput &in, float dt) {
 }
 
 void World::composeOverlay(int mouseX, int mouseY) {
-	_overlay = _inv.visible() || _inv.carried() >= 0;
+	_overlay = _inv.visible() || _inv.carried() >= 0 || _retourShown;
 	if (!_overlay)
 		return;
 	const Graphics::Surface &src = _renderer.surface();
@@ -694,6 +825,18 @@ void World::composeOverlay(int mouseX, int mouseY) {
 	for (int y = 0; y < src.h; y++)
 		memcpy(_comp.getBasePtr(0, y), src.getBasePtr(0, y), (size_t)src.w * src.format.bytesPerPixel);
 	_inv.draw(_comp, _state, mouseX, mouseY);
+	if (_retourShown)
+		_retour.blit(_comp, 0, kRetourX, kRetourBottom - _retour.height());
+}
+
+bool World::retourHot(int x, int y) const {
+	return x < _retour.width() + 10 && y > kRetourBottom - _retour.height();
+}
+
+bool World::takeFinRequest() {
+	const bool r = _finRequest;
+	_finRequest = false;
+	return r;
 }
 
 bool World::takePageRequest(int &page) {
@@ -819,34 +962,60 @@ void World::pickAndAct(const WorldInput &in) {
 	_hoverName[0] = '\0';
 	_cursorKind = kCursorArrow;
 
+	// Carrying a scene object (dat_54d864): the pick point is the middle of the carried sprite, and the next click
+	// goes to whatever node is under it, whatever its type (decomp 418430 "else" branch).
+	int px = in.mouseX, py = in.mouseY;
+	if (_carry != kCarryNone) {
+		const UISprite &c = _ext[_carry - kNumCursors];
+		px += c.width() / 2;
+		py += c.height() / 2;
+	}
 	float depth = 0.0f;
-	const int node = _renderer.pick(_model, in.mouseX, in.mouseY, &depth);
+	const int node = _renderer.pick(_model, px, py, &depth);
+	if (_carry != kCarryNone) {
+		_cursorKind = _carry;
+		if (in.click)
+			onCarryClick(node >= 0 ? _model.node(node).name : "");
+		return;
+	}
+	// The cursor follows the object's type (2, 3, 4, 6, 0x3c); the click itself is dispatched by name for every
+	// object of the table and each handler applies its own gate (the exe's click branch never looks at the type).
 	float distance = 0.0f;
+	int clicked = -1;
 	if (node >= 0) {
 		for (uint i = 0; i < _numObjects; i++) {
 			const Object &o = _objects[i];
 			if (o.node != node)
 				continue;
-			const byte t = o.type;
-			if (t != 2 && t != 3 && t != 4 && t != 6)
-				break;
 			float vp[3];
 			_renderer.nodeViewPos(node, vp);
 			distance = sqrtf(vp[0] * vp[0] + vp[2] * vp[2]);
 			// Museum objects are only live up close (dat_4eee84).
 			if (_scene == kSceneMusee && distance >= kPickRange)
 				break;
-			_hoverObject = i;
-			Common::strlcpy(_hoverName, o.name, sizeof(_hoverName));
+			clicked = i;
+			const byte t = o.type;
+			if (t == 2 || t == 3 || t == 4 || t == 6 || t == 0x3c) {
+				_hoverObject = i;
+				Common::strlcpy(_hoverName, o.name, sizeof(_hoverName));
+			}
 			break;
 		}
 	}
 
-	if (_hoverObject >= 0)
-		_cursorKind = kCursorFinger;
+	if (_hoverObject >= 0) {
+		// Cursor by object type (the jump tables at 0x418ca4 and friends).
+		switch (_objects[_hoverObject].type) {
+		case 2: _cursorKind = kCursorHand; break;
+		case 3: _cursorKind = kCursorPuzzle; break;
+		case 4: _cursorKind = kCursorPoint; break;
+		case 6: _cursorKind = kCursorDoor; break;
+		default: _cursorKind = kCursorSolved; break;
+		}
+	}
 
-	if (in.click && _hoverObject >= 0)
-		onObjectClick(_objects[_hoverObject].name, _objects[_hoverObject].type, distance);
+	if (in.click && clicked >= 0)
+		onObjectClick(_objects[clicked].name, _objects[clicked].type, distance);
 }
 
 namespace {
@@ -916,8 +1085,7 @@ bool World::pickUpObject(const char *name) {
 		} else {
 			hideObj(p.object);
 		}
-		if (p.item == 0)
-			setObjectType("vase", 3);	// the museum's vase opens page 0 once the star is taken (init: line "vase")
+		pickupEffects(p.object);
 		_inv.pickUp(p.item);
 		debug("Vangogh: picked up item %d (%s)", p.item, name);
 		return true;
@@ -928,9 +1096,11 @@ bool World::pickUpObject(const char *name) {
 void World::onObjectClick(const char *name, int type, float distance) {
 	debug("Vangogh: click %s '%s' (type %d, distance %.0f)", sceneName(_scene).c_str(), name, type, distance);
 
+	if (sceneClick(name, type, distance))
+		return;
 	if (type == 2 && pickUpObject(name))
 		return;
-	if (type == 3) {
+	if (type == 3 || type == 0x3c) {	// a solved launcher (0x3c) still opens its page (the exe tests only "!= 0xff")
 		const int page = Page::launcherPage(_scene, name);
 		if (page >= 0) {
 			_pageRequest = page;
@@ -938,9 +1108,7 @@ void World::onObjectClick(const char *name, int type, float distance) {
 		}
 	}
 
-	// Per-scene action hook. Exits are data (kClickExits); puzzle logic for the other pickables is not
-	// implemented and plugs in here, keyed on (_scene, name, type), reading and writing the runtime types
-	// in _objects[].type (e.g. to turn an object inert once used).
+	// Exits are data (kClickExits).
 	for (uint i = 0; i < ARRAYSIZE(kClickExits); i++) {
 		const ClickExit &e = kClickExits[i];
 		if (e.scene != _scene || scumm_stricmp(e.object, name) != 0)

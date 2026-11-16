@@ -370,13 +370,20 @@ inline void clearEdges(WorldInput &in) {
 
 } // end of anonymous namespace
 
+const Graphics::Surface &VangoghEngine::frameSurface(const World &world) const {
+	if (_ending.active())
+		return _ending.surface();
+	return _page->active() ? _page->surface() : world.surface();
+}
+
 void VangoghEngine::presentWorld(const World &world) {
-	_screen->blitFrom(_page->active() ? _page->surface() : world.surface());
+	_screen->blitFrom(frameSurface(world));
 	_screen->update();
 }
 
 uint32 VangoghEngine::framePeriod() const {
-	return _page->active() ? kPageFrameMs : kFrameMs;
+	// The movies and the credits tick like the 2D module (40 ms, timer_2d_cb).
+	return (_page->active() || _ending.active()) ? kPageFrameMs : kFrameMs;
 }
 
 bool VangoghEngine::openPage(World &world, int pageIndex) {
@@ -391,6 +398,14 @@ bool VangoghEngine::openPage(World &world, int pageIndex) {
 }
 
 void VangoghEngine::gameStep(World &world, WorldInput &in, float dt) {
+	if (_ending.active()) {
+		world.setCursor(-1);
+		_ending.step(in);
+		if (_ending.finished())
+			quitGame();	// credits_frame returns 1: timer stop + PostQuitMessage
+		return;
+	}
+
 	if (_page->active()) {
 		_page->tick(in);
 		world.setCursor(_page->cursorKind());
@@ -406,14 +421,24 @@ void VangoghEngine::gameStep(World &world, WorldInput &in, float dt) {
 		if (_page->finished()) {
 			const int target = _page->exitTarget();
 			debug("Vangogh: page %d closed, target %d", _page->pageIndex(), target);
+			const bool ending = _page->endingReached();
 			_page->close();
 			setPageOpen(false);
+			if (ending) {
+				// transition_commit(-1) at page 0x15 (flow.md 4.5): cinefin, cinefin2, credits, quit.
+				_ending.start(false);
+				return;
+			}
 			world.returnFromPage(target);
 		}
 		return;
 	}
 
 	world.frame(in, dt);
+	if (world.takeFinRequest()) {
+		_ending.start(true);
+		return;
+	}
 	if (takePageResume()) {
 		if (!openPage(world, world.state().getByte(kOfsPage)))
 			setPageOpen(false);
@@ -464,7 +489,9 @@ void VangoghEngine::runWorld() {
 		if (spent < framePeriod())
 			g_system->delayMillis(framePeriod() - spent);
 	}
-	saveResume();
+	// The exe quits from the credits without writing GGAME: the ending is not resumable.
+	if (!_ending.active())
+		saveResume();
 	_world = nullptr;
 }
 
@@ -482,23 +509,7 @@ static bool writeShot(const Graphics::Surface &src, const World &world, int mous
 	Graphics::Surface shot;
 	shot.copyFrom(src);
 
-	const byte *pix, *pal;
-	int w, h, hx, hy;
-	if (world.cursorImage(world.cursorKind(), pix, w, h, hx, hy, pal)) {
-		for (int y = 0; y < h; y++) {
-			for (int x = 0; x < w; x++) {
-				const byte c = pix[y * w + x];
-				const int px = mouseX - hx + x, py = mouseY - hy + y;
-				if (!c || px < 0 || py < 0 || px >= shot.w || py >= shot.h)
-					continue;
-				const uint32 col = shot.format.RGBToColor(pal[c * 3], pal[c * 3 + 1], pal[c * 3 + 2]);
-				if (shot.format.bytesPerPixel == 2)
-					*(uint16 *)shot.getBasePtr(px, py) = (uint16)col;
-				else
-					*(uint32 *)shot.getBasePtr(px, py) = col;
-			}
-		}
-	}
+	world.drawCursor(shot, world.cursorKind(), mouseX, mouseY);
 
 	const bool ok = writeSurface(shot, path);
 	shot.free();
@@ -516,6 +527,7 @@ void VangoghEngine::runScript(const Common::String &path) {
 	//   snd <name> [loop]  load+play a sound (Sound::load prefixes: plain, '!' APC, '_' WAV stream), wait, log
 	//   goto <scene>       enter a scene as if coming from the museum
 	//   pose x y z a b     teleport the camera
+	//   aim <node> [dist]  camera dist (default 600) in front of the node, looking at it, mouse on the screen centre
 	//   box <n>            SetBox(n): switch the active collision volume (0 = BOX.3DI, 1.. = the scene's variants)
 	//   newgame            reset the game state (then goto a scene to apply it)
 	//   flag <name> [v]    log (or set) a game state flag: named, A<n>, B<n>, inv<n> or 0x<offset>
@@ -536,6 +548,9 @@ void VangoghEngine::runScript(const Common::String &path) {
 	//   tgp <name> [out.png]         log a TGP's size and save its top-left 640x480
 	//   print              log scene, pose, hovered object and cursor kind
 	//   shot <file.png>    save the current frame with the cursor drawn on it
+	//   until <stage> <max> [rt] [click]  step until the ending stage (cinefin, cinefin2, credits, release, done) is reached
+	//   ending [fin]       start the ending sequence (cinefin, cinefin2, credits, quit); "fin" = the museum fin trigger.
+	//                      The script stops where the game would quit; "step n rt" paces the movies in real time
 	Common::FSNode scriptNode(Common::Path(path, '/'));
 	Common::SeekableReadStream *stream = scriptNode.createReadStream();
 	if (!stream) {
@@ -556,7 +571,7 @@ void VangoghEngine::runScript(const Common::String &path) {
 	WorldInput in;
 	const float dt = (float)kFrameMs * kTicksPerMs;
 	int lineNo = 0;
-	while (!stream->eos() && !shouldQuit()) {
+	while (!stream->eos() && !shouldQuit() && !_ending.finished()) {
 		Common::String line = stream->readLine();
 		lineNo++;
 		const size_t hash = line.findFirstOf('#');
@@ -649,7 +664,7 @@ void VangoghEngine::runScript(const Common::String &path) {
 			}
 		} else if (cmd == "step") {
 			const int n = atoi(a1.c_str());
-			for (int i = 0; i < n && !shouldQuit(); i++) {
+			for (int i = 0; i < n && !shouldQuit() && !_ending.finished(); i++) {
 				const uint32 frameStart = g_system->getMillis();
 				gameStep(world, in, dt);
 				clearEdges(in);
@@ -684,6 +699,12 @@ void VangoghEngine::runScript(const Common::String &path) {
 			p.rotA = atoi(a4.c_str());
 			p.rotB = atoi(a5.c_str());
 			world.setPose(p);
+		} else if (cmd == "aim") {
+			// aim <node> [dist]: camera in front of the node, mouse on the screen centre
+			if (!world.aimAt(a1.c_str(), a2.empty() ? 600 : atoi(a2.c_str())))
+				warning("Vangogh: script:%d: no node '%s' to aim at", lineNo, a1.c_str());
+			in.mouseX = 320;
+			in.mouseY = 240;
 		} else if (cmd == "box") {
 			if (!world.setBox(atoi(a1.c_str())))
 				warning("Vangogh: script:%d: scene has no collision volume %s", lineNo, a1.c_str());
@@ -751,9 +772,38 @@ void VangoghEngine::runScript(const Common::String &path) {
 			const Pose3D p = world.pose();
 			debug("SCRIPT %s scene=%s box=%d pose=%d,%d,%d rot=%d,%d hover='%s' cursor=%d", a1.c_str(),
 				world.sceneName(world.scene()).c_str(), world.box(), p.x, p.y, p.z, p.rotA, p.rotB, world.hoverName(), world.cursorKind());
+		} else if (cmd == "until") {
+			// until <cinefin|cinefin2|credits|release|done> <max> [rt] [click]: step until the ending reaches that stage;
+			// "click" delivers a click every 25 frames while a 2D page is open (to get through page 21)
+			int want = Ending::kStageMovie1;
+			if (a1 == "cinefin2") want = Ending::kStageMovie2;
+			else if (a1 == "credits") want = Ending::kStageCredits;
+			else if (a1 == "release") want = Ending::kStageRelease;
+			else if (a1 == "done") want = 99;
+			const bool rt = a3 == "rt" || a4 == "rt";
+			const bool autoClick = a3 == "click" || a4 == "click";
+			const int max = atoi(a2.c_str());
+			int i = 0;
+			for (; i < max && !shouldQuit() && !_ending.finished(); i++) {
+				if (_ending.active() && want != 99 && _ending.stage() == want)
+					break;
+				const uint32 frameStart = g_system->getMillis();
+				if (autoClick && _page->active() && i % 25 == 24)
+					in.click = true;
+				gameStep(world, in, dt);
+				clearEdges(in);
+				presentWorld(world);
+				world.updateCursor();
+				if (rt && g_system->getMillis() - frameStart < framePeriod())
+					g_system->delayMillis(framePeriod() - (g_system->getMillis() - frameStart));
+			}
+			debug("SCRIPT until %s: %s after %d frames (page open %d)", a1.c_str(),
+				(_ending.active() && _ending.stage() == want) || _ending.finished() ? "reached" : "NOT reached", i, _page->active());
+		} else if (cmd == "ending") {
+			_ending.start(a1 == "fin");
 		} else if (cmd == "shot") {
 #ifdef USE_PNG
-			writeShot(_page->active() ? _page->surface() : world.surface(), world, in.mouseX, in.mouseY, a1);
+			writeShot(frameSurface(world), world, in.mouseX, in.mouseY, a1);
 #else
 			warning("Vangogh: script: this build has no PNG support");
 #endif
@@ -846,17 +896,20 @@ Common::Error VangoghEngine::loadGameStream(Common::SeekableReadStream *stream) 
 }
 
 bool VangoghEngine::canSaveGameStateCurrently(Common::U32String *msg) {
-	return _world && _world->scene() >= 0 && !_world->clipActive() && _world->glideFrames() == 0;
+	return _world && _world->scene() >= 0 && !_ending.active() && !_world->clipActive() && _world->glideFrames() == 0;
 }
 
 bool VangoghEngine::canLoadGameStateCurrently(Common::U32String *msg) {
-	return _world && !_world->clipActive() && _world->glideFrames() == 0;
+	return _world && !_ending.active() && !_world->clipActive() && _world->glideFrames() == 0;
 }
 
 void VangoghEngine::autosaveAfterPlacement(int itemId) {
 	if (!_world || _world->scene() < 0)
 		return;
-	debug("Vangogh: autosave after placing item %d", itemId);
+	if (itemId >= 0)
+		debug("Vangogh: autosave after placing item %d", itemId);
+	else
+		debug("Vangogh: autosave at a puzzle checkpoint");
 	if (saveGameState(getAutosaveSlot(), "Autosave", true).getCode() != Common::kNoError)
 		warning("Vangogh: autosave failed");
 }

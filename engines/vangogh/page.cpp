@@ -26,6 +26,7 @@
 #include "vangogh/gamestate.h"
 #include "vangogh/movietable.h"
 #include "vangogh/page.h"
+#include "vangogh/pagegames.h"
 #include "vangogh/sound.h"
 #include "vangogh/vangogh.h"
 #include "vangogh/world.h"
@@ -41,11 +42,10 @@ namespace Vangogh {
  * 21 is the ending tableau, which has no item and no sunflower, so the collectible count of group 3 is the five
  * pages 19, 20, 22, 23 and 24 -- the counter tops out at 5 and 6 counts the tableau.
  *
- * Bespoke mini games. Fourteen items have their own state machine in the exe on top of the shared drag / place /
- * movie / complete path (the five-step kettle of page 2 slot 3 and its A01_032a..f clips, the briket of page 4, the
- * snail of page 7, the shoes and camee of page 8, the lunette of page 10 slot 17, page 13 slot 21, page 15 slot 24 and
- * the pages 16, 18 and 20 inner animations). They run here as plain placements: the item is accepted into its capsule
- * without its extra interaction and without a movie (items 3, 6, 12, 13, 14, 17, 21, 24).
+ * Slot handlers. After the CapsOP animation the exe runs the slot's handler every tick (state 0xd): the item's movie or
+ * voice, or one of the twelve mini games (items 3, 6, 12, 13, 14, 17, 21, 24, 26, 28, 31, 34). They are PageGame
+ * subclasses (pagegames*.cpp); a click on a placed capsule replays its handler (state 0xb -> 0xe). Movies and voices
+ * end on a held left button, never on a click.
  */
 
 namespace {
@@ -109,17 +109,6 @@ const Launcher kLaunchers[] = {
 	{ kSceneChamp, "sabots", 24 }
 };
 
-// Per item (sub_402410 and its siblings): the movie index handed to sub_417380, or -1; voice stream names.
-const int8 kItemMovie[GameState::kNumItems] = {
-	-1, 29, -1, -1, 60, -1, -1, 15, 21, 61, -1, -1, -1, -1, -1, 59, 20, -1, 58, 62,
-	-1, -1, 37, 38, -1, 66, 51, 63, 27, -1, 67, 54, 35, 36, 28
-};
-const char *const kItemVoice[GameState::kNumItems] = {
-	nullptr, nullptr, "A01_031", nullptr, nullptr, "A03_011", nullptr, nullptr, nullptr, nullptr,
-	"A03_021", "A03_022", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-	"A03_041", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, "A04_01",
-	nullptr, nullptr, nullptr, nullptr, nullptr
-};
 // Items whose placement sound is OP<nn> instead of OP_GENE.
 const byte kOwnOpSound[] = { 3, 6, 8, 12, 14, 15, 18, 19, 21, 22, 25, 27, 28, 29, 32, 34 };
 
@@ -130,6 +119,7 @@ struct R {
 
 const R kSlotDrop[3] = { { 12, 53, 59, 58 }, { 12, 143, 59, 58 }, { 12, 233, 59, 58 } };	// 0x4f3810
 const int kSlotSprite[3][2] = { { 0, 29 }, { 0, 116 }, { 0, 222 } };				// 0x4f3840
+const int kSlotFly[3][2] = { { 40, 83 }, { 40, 172 }, { 40, 263 } };				// 0x4f3888: where a refused item starts flying back
 const R kArrowLeft = { 13, 435, 23, 30 }, kArrowRight = { 509, 435, 22, 30 };		// 0x4f3730/40
 const R kCounter = { 590, 400, 45, 80 };											// 0x4f38e0
 const R kSunRect[3] = { { 127, 313, 30, 26 }, { 111, 244, 24, 32 }, { 148, 290, 30, 26 } };	// 0x4f38f0
@@ -172,8 +162,9 @@ void copyRect(Graphics::Surface &dst, const Graphics::Surface &src, int x, int y
 // ---------------------------------------------------------------------------
 
 Page::Page() : _st(nullptr), _sound(nullptr), _active(false), _page(0), _exit(0), _ending(false), _menuRequest(false),
-	_state(kIdle), _next(kNextNone), _tick(0), _stateTicks(0), _scrollX(0), _scrollY(0), _movieIndex(-1), _animSlot(-1),
-	_voice(0), _barState(kBarHidden), _barY(480), _barCount(0), _barScroll(0), _dragItem(-1), _dragSlot(-1),
+	_state(kIdle), _next(kNextNone), _tick(0), _stateTicks(0), _scrollX(0), _scrollY(0), _movieIndex(-1), _movieSkippable(false), _movieLayer(false), _game(nullptr), _gameSlot(-1),
+	_gameDropped(false), _gameOk(false), _animSlot(-1),
+	_barState(kBarHidden), _barY(480), _barCount(0), _barScroll(0), _dragItem(-1), _dragSlot(-1),
 	_dragIndex(0), _dragStart(0), _flyTick(0), _flyItem(-1), _flyIndex(0), _loupe(kLoupeHidden), _hoverSlot(-1),
 	_retourCell(0), _lastPlaced(-1), _cursor(0), _mx(0), _my(0), _p0Cell(-1), _kx(0), _ky(0), _returnState(kIdle) {
 	memset(_barList, 0, sizeof(_barList));
@@ -214,7 +205,7 @@ int Page::slotOfItem(int item) const {
 
 const char *Page::stateName() const {
 	static const char *const names[] = {
-		"idle", "drag", "reject", "place-open", "playback", "place-close", "click-open", "complete", "sun-ready",
+		"idle", "drag", "reject", "place-open", "playback", "game", "place-close", "click-open", "complete", "sun-ready",
 		"sun-drag", "pot", "after", "zoom", "paint", "p0-loupe", "p0-hold", "end-wait", "end-hold", "done"
 	};
 	return names[_state];
@@ -305,7 +296,7 @@ bool Page::open(int page, GameState &state, Sound *sound) {
 	setState(kIdle);
 	if (page == 21) {
 		// sub_413d30: the ending page opens with its movie.
-		startMovie(kMovieEndA);
+		startMovie(kMovieEndA, false);
 		_next = kNextEndWait;
 		setState(kPlayback);
 	}
@@ -313,10 +304,10 @@ bool Page::open(int page, GameState &state, Sound *sound) {
 }
 
 void Page::close() {
-	if (_voice && _sound)
-		_sound->stop(_voice);
-	_voice = 0;
+	delete _game;
+	_game = nullptr;
 	_clip.close();
+	_movieLayer = false;
 	_active = false;
 	_big.free();
 	_bg.free();
@@ -399,13 +390,16 @@ void Page::playItemSound(int item) {
 	play(own ? Common::String::format("OP%02d", item).c_str() : "OP_GENE");
 }
 
-void Page::startMovie(int index) {
+void Page::startMovie(int index, bool noSkip) {
 	_clip.close();
 	const MovieEntry *e = movieByIndex(index);
 	_movieIndex = -1;
+	_movieLayer = false;
 	if (!e || !_clip.open(e->name))
 		return;
 	_movieIndex = index;
+	_movieSkippable = !noSkip;
+	_movieLayer = true;
 	debug("Vangogh: page movie %d '%s' at %d,%d %dx%d", index, e->name, e->x, e->y, e->w, e->h);
 }
 
@@ -430,43 +424,19 @@ void Page::placeItem(int slot) {
 }
 
 void Page::startPlayback() {
-	const int item = _lastPlaced;
-	if (_page == 0) {
-		// sub_413550: the star's movie, then the painting with its loupe.
-		startMovie(kMovieP0A);
-		_next = kNextP0Loupe;
-		setState(kPlayback);
-		return;
-	}
-	_next = kNextClose;
-	if (kItemMovie[item] >= 0) {
-		startMovie(kItemMovie[item]);
-		if (_movieIndex >= 0) {
-			setState(kPlayback);
-			return;
-		}
-	}
-	if (kItemVoice[item] && _sound) {
-		_voice = _sound->load(Common::String("!") + kItemVoice[item]);
-		if (_voice) {
-			_sound->play(_voice, false);
-			setState(kPlayback);
-			return;
-		}
-	}
-	endPlayback();
+	// sub_413550: the star's movie, then the painting with its loupe (page 0 only; every other slot runs a PageGame).
+	startMovie(kMovieP0A, true);
+	_next = kNextP0Loupe;
+	setState(kPlayback);
 }
 
 void Page::endPlayback() {
 	_clip.close();
 	_movieIndex = -1;
-	_voice = 0;
+	_movieLayer = false;
 	const Next next = _next;
 	_next = kNextNone;
 	switch (next) {
-	case kNextClose:
-		afterPlayback();
-		break;
 	case kNextP0Loupe:
 		loadBackground("a14_031b");
 		_loupe = kLoupeVisible;
@@ -506,6 +476,65 @@ void Page::afterPlayback() {
 	}
 }
 
+// State 0xe: the slot handler's start hook, then the capsule is drawn open and the handler runs every tick (state 0xd).
+void Page::enterGame(bool replay) {
+	const int item = kPages[_page].items[_animSlot];
+	delete _game;
+	_gameSlot = _animSlot;
+	_gameDropped = !replay;
+	_game = PageGame::create(*this, _page, _gameSlot);
+	_game->start(item, _gameSlot);
+	_game->drawCapsules(_gameSlot);
+	_cursor = kCurBusy;
+	setState(kGame);
+}
+
+void Page::tickGame(const WorldInput &in) {
+	_game->_in = &in;
+	if (in.backspace)
+		_game->onAbort();
+	if (!_game->run(_tick & 3, _gameOk))
+		return;
+	endGame();
+}
+
+// State 0xd, handler done -> state 0xf: the page background comes back, then the capsule closes (or an item the handler
+// refused flies back to the bar).
+void Page::endGame() {
+	delete _game;
+	_game = nullptr;
+	_movieLayer = false;
+	_clip.close();
+	_movieIndex = -1;
+	loadBackground(kPages[_page].bg);
+	_cursor = kCurArrow;
+	if (_gameOk || !_gameDropped) {
+		afterPlayback();
+		return;
+	}
+	rejectPlacement();
+}
+
+// State 0xf, refused item: the placement is undone and the item returns to its place in the bar.
+void Page::rejectPlacement() {
+	const int item = kPages[_page].items[_gameSlot];
+	_st->itemPlaced[item] = 0;
+	_st->setItem(item, 1);
+	play("cf_clic3");
+	_flyItem = item;
+	_flyIndex = _dragIndex;
+	_flyFrom[0] = kSlotFly[_gameSlot][0];
+	_flyFrom[1] = kSlotFly[_gameSlot][1];
+	const int k = CLIP(_dragIndex - _barScroll, 0, 5);
+	_flyTo[0] = 101 + kBarIconStride * k;
+	_flyTo[1] = kBarTop + 30;
+	_flyTick = 0;
+	_animSlot = -1;
+	_anim = Anim();
+	_returnState = kIdle;
+	setState(kReject);
+}
+
 void Page::finishPlacement() {
 	_anim = Anim();
 	_animSlot = -1;
@@ -526,7 +555,8 @@ void Page::finishPlacement() {
 		setState(kComplete);
 		return;
 	}
-	autosave();
+	if (_gameDropped)	// state 0xc: dat_52a4a8 is only set for an item that was just placed
+		autosave();
 	setState(kIdle);
 }
 
@@ -552,7 +582,7 @@ void Page::finishCounter() {
 	_st->groupCounter[d.group]++;
 	_anim = Anim();
 	if (_page == 0) {
-		startMovie(kMovieP0C);
+		startMovie(kMovieP0C, false);
 		_next = kNextP0Hold;
 		setState(kPlayback);
 		return;
@@ -581,14 +611,16 @@ void Page::commitAndExit(int target) {
 		_st->set(kOfsRobotOff, 1);
 		break;
 	case 7:
-		_st->set(0x4f9864 - kStateBase, 1);	// unnamed in the notes: set together with 0x4f9868
-		_st->set(0x4f9868 - kStateBase, 1);
+		_st->set(kCbPillowDoneA, 1);
+		_st->set(kCbPillowDoneB, 1);
 		break;
 	case 8:
 		_st->set(kCbShoesEnabled, 1);
 		break;
 	case 11:
 		_st->set(kCbMirrorBroken, 1);
+		if (!_st->isSet(kCbMirrorSoundPlayed))
+			_st->mirrorSoundPending = true;	// dat_52a77c = 1
 		break;
 	case 21:
 		_st->set(kOfsEnding, 1);
@@ -597,8 +629,6 @@ void Page::commitAndExit(int target) {
 	default:
 		break;
 	}
-	if (_voice && _sound)
-		_sound->stop(_voice);
 	_exit = target;
 }
 
@@ -612,7 +642,8 @@ void Page::tick(const WorldInput &in) {
 	_stateTicks++;
 	_mx = in.mouseX;
 	_my = in.mouseY;
-	_cursor = kCurBusy;
+	if (_state != kGame)
+		_cursor = kCurBusy;
 	if (in.esc)
 		_menuRequest = true;
 
@@ -643,7 +674,7 @@ void Page::tick(const WorldInput &in) {
 		tickIdle(in);
 		if (_state == kP0Loupe && _stateTicks >= (uint32)kP0LoupeTicks) {
 			// Nobody clicked the loupe: the painting's second movie plays by itself.
-			startMovie(kMovieP0B);
+			startMovie(kMovieP0B, true);
 			_next = kNextP0Sun;
 			setState(kPlayback);
 		}
@@ -660,23 +691,25 @@ void Page::tick(const WorldInput &in) {
 		}
 		break;
 	case kPlaceOpen:
-		if (stepAnim(_anim))
-			startPlayback();
+		if (stepAnim(_anim)) {
+			if (_page == 0)
+				startPlayback();
+			else
+				enterGame(false);
+		}
 		break;
 	case kPlayback:
-		if (in.click && _stateTicks > 2) {
-			// Not in the exe: a click skips a long movie (the harness and impatient players need it).
-			if (_voice && _sound)
-				_sound->stop(_voice);
+		// sub_417520: a skippable clip ends on a held left button (flow.md 7.3), otherwise when it has played out.
+		if (_movieSkippable && in.mouseDown) {
 			endPlayback();
-		} else if (_voice) {
-			if (!_sound->isPlaying(_voice) && _stateTicks > 2)
-				endPlayback();
 		} else {
 			_clip.step();
 			if (_clip.done())
 				endPlayback();
 		}
+		break;
+	case kGame:
+		tickGame(in);
 		break;
 	case kPlaceClose:
 		if (stepAnim(_anim))
@@ -685,8 +718,12 @@ void Page::tick(const WorldInput &in) {
 	case kClickOpen:
 		if (stepAnim(_anim)) {
 			_anim = Anim();
-			_animSlot = -1;
-			setState(kIdle);
+			if (_page == 0) {
+				_animSlot = -1;
+				setState(kIdle);
+			} else {
+				enterGame(true);
+			}
 		}
 		break;
 	case kComplete:
@@ -724,7 +761,7 @@ void Page::tick(const WorldInput &in) {
 	case kEndWait:
 		_cursor = kEndClick.has(_mx, _my) ? kCurFinger : kCurArrow;
 		if (in.click && kEndClick.has(_mx, _my)) {
-			startMovie(kMovieEndB);
+			startMovie(kMovieEndB, true);
 			_next = kNextEndHold;
 			setState(kPlayback);
 		}
@@ -978,6 +1015,18 @@ void Page::drawCapsules() {
 	}
 }
 
+// sub_4130f0: the page's capsules drawn into the back buffer, @p openSlot's capsule open.
+void Page::bakeCapsules(int openSlot) {
+	const PageDesc &d = kPages[_page];
+	for (int s = 0; s < d.numItems; s++) {
+		const int x = kSlotSprite[s][0], y = kSlotSprite[s][1];
+		if (!_st->itemPlaced[d.items[s]])
+			_capsE[s].blit(_bg, 0, x, y);
+		else
+			(s == openSlot ? _capsAC[s] : _capsAO[s]).blit(_bg, 0, x, y);
+	}
+}
+
 void Page::drawBar() {
 	if (_barState == kBarHidden)
 		return;
@@ -999,6 +1048,20 @@ void Page::compose() {
 
 	if (_state == kZoom) {
 		blitRect(_fb, _big, _scrollX, _scrollY, 640, 480, 0, 0);
+		return;
+	}
+
+	if (_state == kGame) {
+		// The handler owns the picture: its back buffer, the last movie frame, the sprites it keeps over it, the dragged one.
+		blitSurface(_fb, _bg, 0, 0);
+		if (_movieLayer && _movieIndex >= 0 && _clip.frame() >= 0) {
+			const MovieEntry *e = movieByIndex(_movieIndex);
+			if (e)
+				copyRect(_fb, _clip.surface(), e->x, e->y, e->w, e->h);
+		}
+		_game->drawOverlays(_fb);
+		if (_loupe != kLoupeHidden && !_game->bgReloaded())
+			_loupeOut.blit(_fb, _loupe == kLoupeAppearing ? _loupeAnim.cell : _loupeOut.numCells() - 1, d.loupeX, d.loupeY);
 		return;
 	}
 
