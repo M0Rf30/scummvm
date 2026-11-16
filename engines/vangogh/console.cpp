@@ -31,9 +31,15 @@ Console::Console() : GUI::Debugger() {
 	registerCmd("playhnm",  WRAP_METHOD(Console, Cmd_playHNM));
 	registerCmd("showtgp",  WRAP_METHOD(Console, Cmd_showTGP));
 	registerCmd("showspr",  WRAP_METHOD(Console, Cmd_showSPR));
+	registerCmd("playsnd",  WRAP_METHOD(Console, Cmd_playSnd));
 	registerCmd("goto",     WRAP_METHOD(Console, Cmd_goto));
 	registerCmd("pose",     WRAP_METHOD(Console, Cmd_pose));
 	registerCmd("render3d", WRAP_METHOD(Console, Cmd_render3D));
+	registerCmd("flags",    WRAP_METHOD(Console, Cmd_flags));
+	registerCmd("setflag",  WRAP_METHOD(Console, Cmd_setFlag));
+	registerCmd("anim",     WRAP_METHOD(Console, Cmd_anim));
+	registerCmd("objects",  WRAP_METHOD(Console, Cmd_objects));
+	registerCmd("reach",    WRAP_METHOD(Console, Cmd_reach));
 }
 
 Console::~Console() {
@@ -78,6 +84,23 @@ bool Console::Cmd_showSPR(int argc, const char **argv) {
 	return true;
 }
 
+bool Console::Cmd_playSnd(int argc, const char **argv) {
+	if (argc < 2 || argc > 3) {
+		debugPrintf("Usage: %s <name> [loop]\n", argv[0]);
+		debugPrintf("Plays data/sound/<name>.wav; '!name' = APC voice, '_name' = streamed WAV.\n");
+		return true;
+	}
+	Sound *snd = g_engine->_sound;
+	const uint16 h = snd->load(argv[1]);
+	if (!h) {
+		debugPrintf("Cannot load '%s'\n", argv[1]);
+		return true;
+	}
+	snd->play(h, argc == 3 && Common::String(argv[2]) == "loop");
+	debugPrintf("handle %u, %u ms, playing=%d\n", h, snd->durationMs(h), snd->isPlaying(h));
+	return true;
+}
+
 bool Console::Cmd_goto(int argc, const char **argv) {
 	World *world = g_engine->world();
 	if (argc != 2 || !world) {
@@ -118,6 +141,73 @@ bool Console::Cmd_pose(int argc, const char **argv) {
 
 	const Pose3D p = world->pose();
 	debugPrintf("%s: pose %d %d %d %d %d, hover '%s'\n", world->sceneName(world->scene()).c_str(), p.x, p.y, p.z, p.rotA, p.rotB, world->hoverName());
+	return true;
+}
+
+bool Console::Cmd_flags(int argc, const char **argv) {
+	World *world = g_engine->world();
+	if (!world) {
+		debugPrintf("The 3D world is not running\n");
+		return true;
+	}
+	Common::String out;
+	world->state().describe(out);
+	debugPrintf("%s", out.c_str());
+	return true;
+}
+
+bool Console::Cmd_setFlag(int argc, const char **argv) {
+	World *world = g_engine->world();
+	if (!world || argc != 3) {
+		debugPrintf("Usage: %s <name> <value>\n", argv[0]);
+		debugPrintf("Names: A<n> (puzzle solved), B<n>, inv<n>, 0x<offset>, or one of:\n");
+		for (uint i = 0; i < GameState::numNamedFlags(); i++)
+			debugPrintf("  %s\n", GameState::namedFlag(i).name);
+		return true;
+	}
+	uint offset;
+	if (!world->state().findFlag(argv[1], offset)) {
+		debugPrintf("Unknown flag '%s'\n", argv[1]);
+		return true;
+	}
+	world->state().set(offset, (uint32)strtoul(argv[2], nullptr, 0));
+	debugPrintf("%s (0x%03x) = %u; re-enter the scene (goto) to apply it\n", argv[1], offset, world->state().get(offset));
+	return true;
+}
+
+bool Console::Cmd_anim(int argc, const char **argv) {
+	World *world = g_engine->world();
+	if (!world || argc > 4) {
+		debugPrintf("Usage: %s [<name|index> <start|stop|end|pose t|tick n|check>]\n", argv[0]);
+		return true;
+	}
+	Common::String out;
+	const bool ok = world->animCommand(argc >= 2 ? argv[1] : "", argc >= 3 ? argv[2] : "list", argc >= 4 ? atoi(argv[3]) : 0, out);
+	debugPrintf("%s%s", out.c_str(), ok ? "" : "failed\n");
+	return true;
+}
+
+bool Console::Cmd_objects(int argc, const char **argv) {
+	World *world = g_engine->world();
+	if (!world) {
+		debugPrintf("The 3D world is not running\n");
+		return true;
+	}
+	Common::String out;
+	world->describeObjects(out);
+	debugPrintf("%s", out.c_str());
+	return true;
+}
+
+bool Console::Cmd_reach(int argc, const char **argv) {
+	World *world = g_engine->world();
+	if (!world) {
+		debugPrintf("The 3D world is not running\n");
+		return true;
+	}
+	Common::String out;
+	world->describeReach(out);
+	debugPrintf("%s", out.c_str());
 	return true;
 }
 

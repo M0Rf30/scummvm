@@ -9,8 +9,15 @@ MODULE_OBJS = \
 	bfg.o \
 	box3di.o \
 	model3d.o \
+	anim3da.o \
+	gamestate.o \
+	movietable.o \
+	cvy.o \
+	clip.o \
+	scenelogic.o \
 	renderer3d.o \
 	world.o \
+	sound.o \
 	hnmplayer.o \
 	metaengine.o
 

@@ -35,6 +35,7 @@
 
 #include "vangogh/detection.h"
 #include "vangogh/world.h"
+#include "vangogh/sound.h"
 
 namespace Vangogh {
 
@@ -75,7 +76,6 @@ private:
 	void presentWorld(const World &world);
 
 	World *_world;
-
 	/**
 	 * Waits for up to the given number of milliseconds, remaining
 	 * responsive to quit/return-to-launcher requests.
@@ -87,6 +87,7 @@ protected:
 	Common::Error run() override;
 public:
 	Graphics::Screen *_screen = nullptr;
+	Sound *_sound;
 public:
 	VangoghEngine(OSystem *syst, const ADGameDescription *gameDesc);
 	~VangoghEngine() override;

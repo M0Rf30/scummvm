@@ -26,7 +26,10 @@
 #include "common/scummsys.h"
 #include "common/str.h"
 
+#include "vangogh/anim3da.h"
 #include "vangogh/box3di.h"
+#include "vangogh/clip.h"
+#include "vangogh/gamestate.h"
 #include "vangogh/model3d.h"
 #include "vangogh/renderer3d.h"
 
@@ -54,6 +57,12 @@ enum SceneId {
 	kSceneEglise,
 	kNumScenes
 };
+
+const int kSphereRadius = 185;		///< sub_425d30: camera collision sphere
+const float kPickRange = 1200.0f;	///< dat_4eee84: museum click/hover distance
+
+/** Cursor kinds used outside the cursor table code (the exe's cursor table indices). */
+enum { kCursorArrow = 0, kCursorFinger = 11 };
 
 /** Per-frame input, already mapped from ScummVM events by the engine (the exe reads DirectInput scancodes). */
 struct WorldInput {
@@ -93,17 +102,20 @@ public:
 	/**
 	 * Loads scene @p id and places the camera for arriving from @p prev: the
 	 * recorded transition pose for (prev,id), the museum pose keyed by
-	 * @p prev when id is the museum, else the scene default. Everything
-	 * (movement state, collision volume, hidden nodes, pickable types) is reset
-	 * to the new-game state.
+	 * @p prev when id is the museum, else the scene default. The movement
+	 * state is reset; the collision volume, hidden nodes, pickable types,
+	 * animation poses and sounds are rebuilt from the game state (the scene
+	 * init functions of the exe, scenelogic.cpp).
 	 */
 	bool enterScene(int id, int prev);
 
 	/** Runs one frame of @p dt original ticks (dt = ms * 30 / 1000) and leaves the rendered frame in surface(). */
 	void frame(const WorldInput &in, float dt);
 
-	const Graphics::Surface &surface() const { return _renderer.surface(); }
+	const Graphics::Surface &surface() const { return _clipActive ? _clip.surface() : _renderer.surface(); }
 	int scene() const { return _scene; }
+	/** Index of the active collision volume (0 = BOX.3DI). */
+	int box() const { return _box; }
 
 	/** Current camera, with the angles as stored by the movement code (signed pitch, yaw 0..4095). */
 	Pose3D pose() const;
@@ -133,6 +145,67 @@ public:
 	/** Pickable type of node name @p name in the current scene (255 = inert, 0 if unknown). */
 	int objectType(const char *name) const;
 
+	// ---- Game state (gamestate.h) ----
+
+	GameState &state() { return _state; }
+	const GameState &state() const { return _state; }
+	/** Starts a fresh game: the .data state, chambre variant 0, and re-enters nothing (call enterScene). */
+	void newGame();
+	/** Copies the camera and the scene ids into the state block (the exe does this before saving or entering a 2D puzzle). */
+	void snapshotState();
+	/** The 2D puzzle commit of puzzle @p id: sets A[id] and the page, as the exe does on return from a puzzle. */
+	void solvePuzzle(int id);
+
+	// ---- Objects (scenelogic.cpp) ----
+
+	uint numObjects() const { return _numObjects; }
+	/** Object @p i of the scene: name, runtime pickable type and whether its faces are hidden. */
+	bool objectInfo(uint i, const char *&name, int &type, bool &hidden) const;
+	/** Sets the runtime pickable type of @p name (the exe rewrites these bytes from init and tick code). */
+	bool setObjectType(const char *name, int type);
+	/** HideObject/ShowObject (sub_43bc60/sub_43bc90) on the node called @p name. */
+	bool setObjectHidden(const char *name, bool hidden);
+
+	// ---- 3DA animations (scenelogic.cpp) ----
+
+	struct AnimInfo {
+		const char *clip;	///< .3DA record
+		const char *node;	///< the object the exe names for it
+		bool active;
+		int elapsed, duration;
+		uint channels, animated;
+	};
+	uint numAnims() const { return _numAnims; }
+	bool animInfo(uint i, AnimInfo &out) const;
+	/** Index of the animation whose clip is @p name ("portail", "portail.3da" or its index), or -1. */
+	int findAnim(const Common::String &name) const;
+	/** Activates animation @p i from tick 1, as the interaction scripts do (`active = 1`). */
+	bool startAnim(uint i);
+	bool stopAnim(uint i);
+	/** Poses the model at tick @p t of animation @p i without touching its running state. */
+	bool poseAnim(uint i, int t);
+	/** Advances every active animation by @p dt original ticks (1..10), as the scene tick does. */
+	void stepAnims(int dt);
+	/**
+	 * Debug interface shared by the console and the test scripts: "list" (or an empty @p sel) describes every
+	 * animation; otherwise @p op is start, stop, end (last pose), pose (at tick @p arg), tick (advance @p arg ticks)
+	 * or check (3DA/3DC channel mapping cross-check) on the animation selected by @p sel. Appends the result to @p out.
+	 */
+	bool animCommand(const Common::String &sel, const Common::String &op, int arg, Common::String &out);
+	/** Lists the scene's objects: name, runtime type, hidden. */
+	void describeObjects(Common::String &out) const;
+	/** Gating report: floods the floor the camera can walk on in the active collision volume (cell count) and, in the museum, tells which paintings are within click range. */
+	void describeReach(Common::String &out);
+
+	// ---- Arrival and departure clips (scenelogic.cpp) ----
+
+	bool clipActive() const { return _clipActive; }
+	const MovieClip &clip() const { return _clip; }
+	/** Plays data/movies/<name>.hnm full screen; when it ends (or is skipped by a click) scene @p thenScene is entered from @p thenPrev. */
+	bool playClip(const char *name, int thenScene, int thenPrev);
+	/** Leaves the scene for the museum (Backspace): plays the "r" clip first if the scene's puzzles are all solved. */
+	void leaveToMuseum();
+
 private:
 	enum { kMaxObjects = 32, kNumCursors = 14 };
 
@@ -147,21 +220,42 @@ private:
 	void pickAndAct(const WorldInput &in);
 	bool checkCameraExits();
 	void onObjectClick(const char *name, int type, float distance);
+	void startPaintingClick(int dest);
 	void startGlide(int dest);
 	void stepGlide();
 	void changeScene(int dest, int prev);
 	void cameraPose(Pose3D &p) const;
 	void locateObjects();
 
+	// scenelogic.cpp
+	void initSceneState(Pose3D *pose);
+	void loadAnims(const BFGFile &bfg);
+	void loadSounds();
+	void sceneTick(int dt);
+	void animDone(uint i);
+	bool arrivalClip(int scene, char *name, size_t size) const;
+	void stepClip(const WorldInput &in);
+	void endClip();
+	void selectBoxMaisonj();
+	void hideObj(const char *name) { setObjectHidden(name, true); }
+	void showObj(const char *name) { setObjectHidden(name, false); }
+	void setTypes(int type, const char *const *names);
+	void playSound(const char *name, bool loop = false);
+	/** Camera-relative horizontal distance to node @p name as of the last render (sub_43c4f0 + sqrt(x^2+z^2)). */
+	float objectDistance(const char *name) const;
+	void animToEnd(uint i);
+	int animEndFrame(uint i) const;
+
 	Renderer3D _renderer;
 	Model3D _model;
 	CollisionMesh _boxes[5];	///< SetBox variants of the current scene; [0] = BOX.3DI
 	bool _boxLoaded[5];
+	int _box;					///< index of the active collision volume
 	CollisionWorld _collision;
 
+	GameState _state;
 	int _scene;
 	int _prevScene;
-	int _chambreVariant;	///< 0 = chambrev (day), 1 = chambreb
 	int32 _groundProbe;		///< dat_4f9548
 
 	// Movement state, int16 exactly as the exe's (dat_6997xx).
@@ -193,6 +287,33 @@ private:
 	Pose3D _glideFrom, _glideTo;
 
 	bool _menuRequest;
+
+	// 3DA animation slots of the current scene (the exe's LoadAnims<scene> table).
+	enum { kMaxAnims = 8 };
+	struct AnimSlot {
+		Anim3DA clip;
+		const char *file;
+		const char *node;
+		int elapsed;		///< ENTRY.cur, starts at 1
+		bool active;
+		bool loaded;
+		byte step;			///< ticks added per frame: full dt, dt >> 1, or 1
+		byte end;			///< what happens when it runs out: stop, loop, or never run
+	};
+	AnimSlot _anims[kMaxAnims];
+	uint _numAnims;
+
+	// Runtime (not saved) scene state: the exe's 698fxx globals.
+	int _framesInScene;	///< frames rendered since entry, proximity checks need a valid view position
+	int _timer[3];		///< scene tick timers: butterflies (jardin), robot dialogue state and voice index (musee)
+	int _timerLimit;	///< jardin butterfly switch threshold
+	uint16 _voice;		///< sound handle of the running voice line, 0 = none
+	bool _trainSound;
+
+	// Arrival/departure clip.
+	MovieClip _clip;
+	bool _clipActive;
+	int _clipScene, _clipPrev;
 };
 
 } // End of namespace Vangogh

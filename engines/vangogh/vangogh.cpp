@@ -51,11 +51,12 @@ namespace Vangogh {
 VangoghEngine *g_engine;
 
 VangoghEngine::VangoghEngine(OSystem *syst, const ADGameDescription *gameDesc) : Engine(syst),
-	_gameDescription(gameDesc), _randomSource("Vangogh"), _world(nullptr) {
+	_gameDescription(gameDesc), _randomSource("Vangogh"), _world(nullptr), _sound(new Sound()) {
 	g_engine = this;
 }
 
 VangoghEngine::~VangoghEngine() {
+	delete _sound;
 	delete _screen;
 }
 
@@ -404,6 +405,14 @@ void VangoghEngine::runWorld() {
 }
 
 #ifdef USE_PNG
+static bool writeSurface(const Graphics::Surface &surf, const Common::String &path) {
+	Common::DumpFile out;
+	const bool ok = out.open(Common::Path(path, '/')) && Image::writePNG(out, surf);
+	if (!ok)
+		warning("Vangogh: script: could not write %s", path.c_str());
+	return ok;
+}
+
 static bool writeShot(const World &world, int mouseX, int mouseY, const Common::String &path) {
 	// Copy the framebuffer and draw the current cursor sprite on it, since PNGs of the surface alone carry no pointer.
 	const Graphics::Surface &src = world.surface();
@@ -419,16 +428,17 @@ static bool writeShot(const World &world, int mouseX, int mouseY, const Common::
 				const int px = mouseX - hx + x, py = mouseY - hy + y;
 				if (!c || px < 0 || py < 0 || px >= shot.w || py >= shot.h)
 					continue;
-				*(uint16 *)shot.getBasePtr(px, py) = shot.format.RGBToColor(pal[c * 3], pal[c * 3 + 1], pal[c * 3 + 2]);
+				const uint32 col = shot.format.RGBToColor(pal[c * 3], pal[c * 3 + 1], pal[c * 3 + 2]);
+				if (shot.format.bytesPerPixel == 2)
+					*(uint16 *)shot.getBasePtr(px, py) = (uint16)col;
+				else
+					*(uint32 *)shot.getBasePtr(px, py) = col;
 			}
 		}
 	}
 
-	Common::DumpFile out;
-	bool ok = out.open(Common::Path(path, '/')) && Image::writePNG(out, shot);
+	const bool ok = writeSurface(shot, path);
 	shot.free();
-	if (!ok)
-		warning("Vangogh: script: could not write %s", path.c_str());
 	return ok;
 }
 #endif
@@ -439,10 +449,18 @@ void VangoghEngine::runScript(const Common::String &path) {
 	//   press <key>        one-frame edge for f1, backspace, space, esc or enter
 	//   mouse <x> <y>      move the mouse
 	//   click              left click, delivered on the next frame
-	//   step <n>           run n 66 ms frames with the current input
+	//   step <n> [rt]      run n 66 ms frames with the current input (rt = paced in real time, needed for clips and voices)
+	//   snd <name> [loop]  load+play a sound (Sound::load prefixes: plain, '!' APC, '_' WAV stream), wait, log
 	//   goto <scene>       enter a scene as if coming from the museum
 	//   pose x y z a b     teleport the camera
 	//   box <n>            SetBox(n): switch the active collision volume (0 = BOX.3DI, 1.. = the scene's variants)
+	//   newgame            reset the game state (then goto a scene to apply it)
+	//   flag <name> [v]    log (or set) a game state flag: named, A<n>, B<n>, inv<n> or 0x<offset>
+	//   flags              log every set flag
+	//   anim <sel> <op> [n]  3DA animations: op = start, stop, end, pose n, tick n, check ("anim list" lists them)
+	//   objects            log the scene's objects with their runtime types
+	//   reach              log the museum paintings' distance to the walkable floor
+	//   movie <name> <frame> <out.png>  play a movie-table clip (CVY mask included) to frame N and save its surface
 	//   print              log scene, pose, hovered object and cursor kind
 	//   shot <file.png>    save the current frame with the cursor drawn on it
 	Common::FSNode scriptNode(Common::Path(path, '/'));
@@ -511,10 +529,27 @@ void VangoghEngine::runScript(const Common::String &path) {
 		} else if (cmd == "step") {
 			const int n = atoi(a1.c_str());
 			for (int i = 0; i < n && !shouldQuit(); i++) {
+				const uint32 frameStart = g_system->getMillis();
 				world.frame(in, dt);
 				clearEdges(in);
 				presentWorld(world);
 				world.updateCursor();
+				if (a2 == "rt" && g_system->getMillis() - frameStart < kFrameMs)
+					g_system->delayMillis(kFrameMs - (g_system->getMillis() - frameStart));
+			}
+		} else if (cmd == "snd") {
+			// snd <name> [loop]: load+play via Sound, wait (max 3 s real time), log state
+			const uint16 h = _sound->load(a1);
+			if (!h) {
+				warning("Vangogh: script:%d: cannot load sound '%s'", lineNo, a1.c_str());
+			} else {
+				_sound->play(h, a2 == "loop");
+				debug("SCRIPT snd '%s' handle=%u duration=%u ms playing=%d", a1.c_str(), h, _sound->durationMs(h), _sound->isPlaying(h));
+				const uint32 end = g_system->getMillis() + MIN<uint32>(_sound->durationMs(h) + 300, 3000);
+				while (g_system->getMillis() < end && _sound->isPlaying(h) && !shouldQuit())
+					g_system->delayMillis(20);
+				debug("SCRIPT snd '%s' after wait playing=%d", a1.c_str(), _sound->isPlaying(h));
+				_sound->stop(h);
 			}
 		} else if (cmd == "goto") {
 			const int id = World::sceneIdByName(a1);
@@ -531,10 +566,55 @@ void VangoghEngine::runScript(const Common::String &path) {
 		} else if (cmd == "box") {
 			if (!world.setBox(atoi(a1.c_str())))
 				warning("Vangogh: script:%d: scene has no collision volume %s", lineNo, a1.c_str());
+		} else if (cmd == "newgame") {
+			world.newGame();
+		} else if (cmd == "flag" || cmd == "flags") {
+			Common::String out;
+			uint offset;
+			if (cmd == "flags") {
+				world.state().describe(out);
+			} else if (!world.state().findFlag(a1, offset)) {
+				warning("Vangogh: script:%d: unknown flag '%s'", lineNo, a1.c_str());
+			} else {
+				if (!a2.empty())
+					world.state().set(offset, (uint32)strtoul(a2.c_str(), nullptr, 0));
+				out = Common::String::format("%s (0x%03x) = %u\n", a1.c_str(), offset, world.state().get(offset));
+			}
+			debug("SCRIPT %s\n%s", cmd.c_str(), out.c_str());
+		} else if (cmd == "anim" || cmd == "objects" || cmd == "reach") {
+			Common::String out;
+			bool ok = true;
+			if (cmd == "anim")
+				ok = world.animCommand(a1 == "list" ? Common::String() : a1, a2.empty() ? "list" : a2, atoi(a3.c_str()), out);
+			else if (cmd == "objects")
+				world.describeObjects(out);
+			else
+				world.describeReach(out);
+			if (!ok)
+				warning("Vangogh: script:%d: %s failed", lineNo, line.c_str());
+			debug("SCRIPT %s %s\n%s", cmd.c_str(), a1.c_str(), out.c_str());
+		} else if (cmd == "movie") {
+			// movie <name> <frame> <out.png>: plays the clip in real time until frame N has been composed
+			MovieClip clip;
+			if (!clip.open(a1)) {
+				warning("Vangogh: script:%d: cannot open movie '%s'", lineNo, a1.c_str());
+			} else {
+				const int target = atoi(a2.c_str());
+				const uint32 limit = g_system->getMillis() + 60000;
+				while (!clip.done() && clip.frame() < target && !shouldQuit() && g_system->getMillis() < limit) {
+					clip.step();
+					g_system->delayMillis(5);
+				}
+				debug("SCRIPT movie '%s' frame=%d done=%d mask=%d", a1.c_str(), clip.frame(), clip.done(), clip.hasMask());
+#ifdef USE_PNG
+				writeSurface(clip.surface(), a3);
+#endif
+				clip.close();
+			}
 		} else if (cmd == "print") {
 			const Pose3D p = world.pose();
-			debug("SCRIPT %s scene=%s pose=%d,%d,%d rot=%d,%d hover='%s' cursor=%d", a1.c_str(),
-				world.sceneName(world.scene()).c_str(), p.x, p.y, p.z, p.rotA, p.rotB, world.hoverName(), world.cursorKind());
+			debug("SCRIPT %s scene=%s box=%d pose=%d,%d,%d rot=%d,%d hover='%s' cursor=%d", a1.c_str(),
+				world.sceneName(world.scene()).c_str(), world.box(), p.x, p.y, p.z, p.rotA, p.rotB, world.hoverName(), world.cursorKind());
 		} else if (cmd == "shot") {
 #ifdef USE_PNG
 			writeShot(world, in.mouseX, in.mouseY, a1);

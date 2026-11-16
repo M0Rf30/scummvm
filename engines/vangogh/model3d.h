@@ -86,6 +86,12 @@ public:
 
 	uint numNodes() const { return _nodes.size(); }
 	const Node &node(uint i) const { return _nodes[i]; }
+	/** Mutable node, for animation: the node pose is the only thing that changes after load (Anim3DA::apply). */
+	Node &editNode(uint i) { return _nodes[i]; }
+	/** Index of the node called @p name (case-insensitive), or -1. */
+	int findNode(const char *name) const;
+	/** World-space position of node @p i's origin (composes the parent chain of poses). */
+	void worldPos(uint i, float out[3]) const;
 	uint numVertices() const { return _vertices.size(); }
 	const Vertex *vertices() const { return _vertices.begin(); }
 	const float *uvs() const { return _uvs.begin(); }	///< interleaved u,v in texels

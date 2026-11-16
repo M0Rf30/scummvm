@@ -40,6 +40,9 @@ private:
 	/** `showspr <basename> [cellIndex]` - decodes and blits cell [cellIndex] (default 0) of data/sprites/<basename>.spr for 5s. */
 	bool Cmd_showSPR(int argc, const char **argv);
 
+	/** `playsnd <name> [loop]` - plays data/sound/<name>.wav ('!' prefix = APC voice, '_' = streamed WAV). */
+	bool Cmd_playSnd(int argc, const char **argv);
+
 	/** `goto <scene>` - enters a scene of the running 3D world as if arriving from the museum. */
 	bool Cmd_goto(int argc, const char **argv);
 
@@ -48,6 +51,21 @@ private:
 
 	/** `render3d <scene> <out.png> [x y z rotA rotB]` - software-renders scenes_3d/<scene>.bfg to a PNG (default pose if none given). */
 	bool Cmd_render3D(int argc, const char **argv);
+
+	/** `flags` - lists the game state flags that are set. */
+	bool Cmd_flags(int argc, const char **argv);
+
+	/** `setflag <name> <value>` - sets a game state flag (named, A<n>, B<n>, inv<n> or a hex offset). */
+	bool Cmd_setFlag(int argc, const char **argv);
+
+	/** `anim [<name|index> <start|stop|end|pose t|tick n|check>]` - lists or drives the scene's 3DA animations. */
+	bool Cmd_anim(int argc, const char **argv);
+
+	/** `objects` - lists the scene's pickable objects with their runtime type. */
+	bool Cmd_objects(int argc, const char **argv);
+
+	/** `reach` - museum gating: distance of each painting to the walkable floor of the active collision volume. */
+	bool Cmd_reach(int argc, const char **argv);
 public:
 	Console();
 	~Console() override;

@@ -80,6 +80,7 @@ public:
 
 	/** Hides/shows a node's own faces (the exe's HideObject/ShowObject, node flag bit 0); hidden nodes are neither drawn nor picked. */
 	void setNodeHidden(uint node, bool hidden) { _hidden[node] = hidden ? 1 : 0; }
+	bool nodeHidden(uint node) const { return _hidden[node] != 0; }
 
 	/** Renders @p model from @p pose. All buffers are preallocated; render() itself does not allocate. */
 	void render(const Model3D &model, const Pose3D &pose);

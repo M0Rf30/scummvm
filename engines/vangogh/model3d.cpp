@@ -80,6 +80,30 @@ void Model3D::clear() {
 	_textures.clear();
 }
 
+int Model3D::findNode(const char *name) const {
+	for (uint i = 0; i < _nodes.size(); i++) {
+		if (scumm_stricmp(_nodes[i].name, name) == 0)
+			return i;
+	}
+	return -1;
+}
+
+void Model3D::worldPos(uint i, float out[3]) const {
+	// p_world = P_parent + R_parent * (P_node), applied from the node up to the root.
+	float p[3] = { (float)_nodes[i].pos[0], (float)_nodes[i].pos[1], (float)_nodes[i].pos[2] };
+	uint guard = _nodes.size();
+	for (int n = _nodes[i].parent; n >= 0 && guard--; n = _nodes[n].parent) {
+		const Node &a = _nodes[n];
+		const float x = p[0], y = p[1], z = p[2];
+		p[0] = a.pos[0] + a.rot[0] * x + a.rot[1] * y + a.rot[2] * z;
+		p[1] = a.pos[1] + a.rot[3] * x + a.rot[4] * y + a.rot[5] * z;
+		p[2] = a.pos[2] + a.rot[6] * x + a.rot[7] * y + a.rot[8] * z;
+	}
+	out[0] = p[0];
+	out[1] = p[1];
+	out[2] = p[2];
+}
+
 bool Model3D::load(const BFGFile &bfg, const Common::String &scene) {
 	clear();
 

@@ -41,8 +41,6 @@ namespace {
 // ---------------------------------------------------------------------------
 // Constants of the exe (world.md sec.8, sec.9).
 
-const int kSphereRadius = 185;			// sub_425d30: camera collision sphere
-const float kPickRange = 1200.0f;		// dat_4eee84: museum click distance
 const int kGlideFrames = 20;			// dat_4f98bc: mode-4 painting glide divisor
 const int kStrafeMax = 50, kTurnMax = 20, kFwdMax = 75;
 const int kPitchLimit = 500;
@@ -167,19 +165,6 @@ const SpecEntry *specsForScene(int scene, int variant, uint &count) {
 	default: count = 0; return nullptr;
 	}
 }
-
-// New-game initialisation of types that the exe sets to 4 at scene entry
-// (pont: trappe/pouli03/pouli02, hopiext: bell, ropes and the two grilles).
-struct TypeOverride {
-	int scene;
-	const char *name;
-};
-const TypeOverride kNewGameTypes[] = {
-	{ kScenePont, "trappe" }, { kScenePont, "pouli03" }, { kScenePont, "pouli02" },
-	{ kSceneHopiext, "cloche" }, { kSceneHopiext, "korde1" }, { kSceneHopiext, "korde2" },
-	{ kSceneHopiext, "korde3" }, { kSceneHopiext, "korde4" }, { kSceneHopiext, "grilledrt" },
-	{ kSceneHopiext, "grillegche" }
-};
 
 // ---------------------------------------------------------------------------
 // Poses (x, y, z, rotA, rotB). world.md sec.9.2.
@@ -315,8 +300,6 @@ const CursorDef kCursorDefs[14] = {
 	{ 0, -7, -10 }, { 1, -9, 0 }, { 2, 8, 0 }, { 3, 0, -9 }, { 4, 0, 8 }, { 5, -9, -9 }, { 6, 8, -9 },
 	{ 7, -9, 9 }, { 8, 8, 9 }, { 9, 0, 0 }, { 10, 2, -8 }, { 11, 0, -9 }, { 12, 0, -6 }, { 13, 0, -6 }
 };
-const int kCursorArrow = 0;
-const int kCursorFinger = 11;
 
 // ---------------------------------------------------------------------------
 // 1.15 fixed-point trig tables (sub_4767c0), index masked with 0xfff.
@@ -345,10 +328,17 @@ inline int16 signedAngle(int32 a) {
 
 } // end of anonymous namespace
 
-World::World() : _scene(-1), _prevScene(0), _chambreVariant(0), _groundProbe(500), _mouseLook(false),
+World::World() : _box(0), _scene(-1), _prevScene(0), _groundProbe(500), _mouseLook(false),
 		_numObjects(0), _hoverObject(-1), _cursorKind(kCursorArrow), _shownKind(-1), _cursorsReady(false),
-		_glideDest(0), _glideLeft(0), _menuRequest(false) {
+		_glideDest(0), _glideLeft(0), _menuRequest(false), _numAnims(0), _framesInScene(0), _timerLimit(0),
+		_voice(0), _trainSound(false), _clipActive(false), _clipScene(0), _clipPrev(0) {
 	buildTrig();
+	memset(_timer, 0, sizeof(_timer));
+	for (int i = 0; i < kMaxAnims; i++) {
+		_anims[i].file = _anims[i].node = nullptr;
+		_anims[i].elapsed = 1;
+		_anims[i].active = _anims[i].loaded = false;
+	}
 	memset(_boxLoaded, 0, sizeof(_boxLoaded));
 	memset(_objects, 0, sizeof(_objects));
 	memset(_cursorPalette, 0, sizeof(_cursorPalette));
@@ -434,7 +424,7 @@ bool World::takeMenuRequest() {
 
 Common::String World::sceneName(int id) const {
 	if (id == kSceneChambre)
-		return _chambreVariant ? "chambreb" : "chambrev";
+		return _state.get(kCbVariant) ? "chambreb" : "chambrev";
 	if (id < 0 || id >= kNumScenes)
 		return Common::String();
 	return kSceneNames[id];
@@ -503,6 +493,7 @@ bool World::enterScene(int id, int prev) {
 	_scene = id;
 	_prevScene = prev;
 	_renderer.bindModel(_model);
+	loadAnims(bfg);
 
 	// Collision volumes. BOX.3DI is the default; the museum starts in BOX1 (SetBoxMusee(1)).
 	_collision.setActive(nullptr);
@@ -519,10 +510,15 @@ bool World::enterScene(int id, int prev) {
 	_groundProbe = (id == kSceneTerrasse) ? 0xf0 : 500;
 
 	locateObjects();
+	_framesInScene = 0;
 	_hoverObject = -1;
 	_hoverName[0] = '\0';
 	_cursorKind = kCursorArrow;
 	_glideLeft = 0;
+	if (_clipActive) {	// entering a scene by any other route (debug goto) abandons a running clip
+		_clip.close();
+		_clipActive = false;
+	}
 
 	// Camera.
 	resetMovement();
@@ -547,6 +543,7 @@ bool World::enterScene(int id, int prev) {
 		p.x = r.x; p.y = r.y; p.z = r.z; p.rotA = r.a; p.rotB = r.b;
 		warning("Vangogh: scene %s has no default pose, using the 9->2 arrival pose", name.c_str());
 	}
+	initSceneState(&p);
 	setPose(p);
 
 	debug("Vangogh: entered %s (id %d) from %d at %d,%d,%d rot %d,%d", name.c_str(), id, prev, _pos[0], _pos[1], _pos[2], _rotA, _rotB);
@@ -557,12 +554,13 @@ bool World::setBox(int n) {
 	if (n < 0 || n > kMaxBoxVariants || !_boxLoaded[n])
 		return false;
 	_collision.setActive(&_boxes[n]);
+	_box = n;
 	return true;
 }
 
 void World::locateObjects() {
 	uint count = 0;
-	const SpecEntry *specs = specsForScene(_scene, _chambreVariant, count);
+	const SpecEntry *specs = specsForScene(_scene, _state.get(kCbVariant), count);
 	_numObjects = 0;
 	for (uint i = 0; i < count && _numObjects < kMaxObjects; i++) {
 		Object &o = _objects[_numObjects];
@@ -577,10 +575,6 @@ void World::locateObjects() {
 		}
 		if (o.node < 0)
 			debug("Vangogh: %s: object '%s' has no node in the model", sceneName(_scene).c_str(), o.name);
-		for (uint k = 0; k < ARRAYSIZE(kNewGameTypes); k++) {
-			if (kNewGameTypes[k].scene == _scene && scumm_stricmp(kNewGameTypes[k].name, o.name) == 0)
-				o.type = 4;
-		}
 		_numObjects++;
 	}
 }
@@ -607,6 +601,11 @@ void World::frame(const WorldInput &in, float dt) {
 	if (in.esc)
 		_menuRequest = true;
 
+	if (_clipActive) {
+		stepClip(in);
+		return;
+	}
+
 	if (_glideLeft > 0) {
 		stepGlide();
 		Pose3D p;
@@ -615,8 +614,12 @@ void World::frame(const WorldInput &in, float dt) {
 		_hoverObject = -1;
 		_hoverName[0] = '\0';
 		_cursorKind = kCursorArrow;
-		if (_glideLeft == 0)
+		if (_glideLeft == 0) {
+			char clipName[16];
+			if (arrivalClip(_glideDest, clipName, sizeof(clipName)) && playClip(clipName, _glideDest, 0))
+				return;
 			changeScene(_glideDest, 0);
+		}
 		return;
 	}
 
@@ -626,6 +629,10 @@ void World::frame(const WorldInput &in, float dt) {
 	Pose3D p;
 	cameraPose(p);
 	_renderer.render(_model, p);
+
+	_framesInScene++;
+	stepAnims(CLIP((int)(dt + 0.5f), 1, 10));
+	sceneTick(CLIP((int)(dt + 0.5f), 1, 10));
 
 	pickAndAct(in);
 
@@ -642,7 +649,7 @@ void World::frame(const WorldInput &in, float dt) {
 		}
 		if (in.backspace) {
 			debug("Vangogh: leaving %s for the museum", sceneName(_scene).c_str());
-			changeScene(kSceneMusee, _scene);
+			leaveToMuseum();
 		}
 	}
 }
@@ -788,8 +795,8 @@ void World::onObjectClick(const char *name, int type, float distance) {
 		}
 		if (_scene == kSceneMusee) {
 			if (e.dest == kSceneChambre)
-				_chambreVariant = 1;	// m03_02 is the bedroom painting; chambrev is only the pre-game state
-			startGlide(e.dest);
+				_state.set(kCbVariant, 1);	// m03_02 is the bedroom painting; chambrev is only the pre-game state
+			startPaintingClick(e.dest);
 		} else {
 			changeScene(e.dest, _scene);
 		}
