@@ -20,6 +20,7 @@
  */
 
 #include "vangogh/vangogh.h"
+#include "vangogh/renderer3d.h"
 #include "vangogh/detection.h"
 #include "vangogh/console.h"
 #include "vangogh/hnmplayer.h"
@@ -68,6 +69,20 @@ Common::Error VangoghEngine::run() {
 	// "schermo1.tga"/"schermo2.tga" with "Schermo3.tga".
 	const Common::FSNode gameDataDir(ConfMan.getPath("path"));
 	SearchMan.addSubDirectoryMatching(gameDataDir, "data", 0, 2);
+
+	// Headless debug aid: vangogh_render3d=<scene>:<out.png> renders the scene's
+	// 3D model with its default pose to a PNG and exits, with no graphics init.
+	if (ConfMan.hasKey("vangogh_render3d")) {
+		const Common::String spec = ConfMan.get("vangogh_render3d");
+		const size_t sep = spec.findFirstOf(':');
+		if (sep == Common::String::npos) {
+			warning("Vangogh: vangogh_render3d expects <scene>:<out.png>");
+			return Common::kUnknownError;
+		}
+		const bool ok = renderSceneToPNG(spec.substr(0, sep), spec.substr(sep + 1), nullptr);
+		quitGame();	// don't fall back to the launcher
+		return ok ? Common::kNoError : Common::kUnknownError;
+	}
 
 	// Set the engine's debugger console
 	setDebugger(new Console());

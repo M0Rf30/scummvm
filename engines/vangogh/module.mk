@@ -8,7 +8,9 @@ MODULE_OBJS = \
 	spr.o \
 	bfg.o \
 	box3di.o \
+	model3d.o \
 	navgraph.o \
+	renderer3d.o \
 	hnmplayer.o \
 	scene.o \
 	metaengine.o

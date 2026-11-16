@@ -45,6 +45,9 @@ private:
 
 	/** `hotspots` - lists the last-entered scene's projected hotspot boxes (screen rect + bound nav target) and its region-based nav edges. */
 	bool Cmd_hotspots(int argc, const char **argv);
+
+	/** `render3d <scene> <out.png> [x y z rotA rotB]` - software-renders scenes_3d/<scene>.bfg to a PNG (default pose if none given). */
+	bool Cmd_render3D(int argc, const char **argv);
 public:
 	Console();
 	~Console() override;

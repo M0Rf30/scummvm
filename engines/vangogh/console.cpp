@@ -21,6 +21,7 @@
 
 #include "vangogh/console.h"
 #include "vangogh/navgraph.h"
+#include "vangogh/renderer3d.h"
 #include "vangogh/scene.h"
 #include "vangogh/vangogh.h"
 
@@ -33,6 +34,7 @@ Console::Console() : GUI::Debugger() {
 	registerCmd("showspr",  WRAP_METHOD(Console, Cmd_showSPR));
 	registerCmd("scene",    WRAP_METHOD(Console, Cmd_scene));
 	registerCmd("hotspots", WRAP_METHOD(Console, Cmd_hotspots));
+	registerCmd("render3d", WRAP_METHOD(Console, Cmd_render3D));
 }
 
 Console::~Console() {
@@ -129,6 +131,30 @@ bool Console::Cmd_hotspots(int argc, const char **argv) {
 		}
 	}
 
+	return true;
+}
+
+bool Console::Cmd_render3D(int argc, const char **argv) {
+	if (argc != 3 && argc != 8) {
+		debugPrintf("Usage: %s <scene> <out.png> [x y z rotA rotB]\n", argv[0]);
+		debugPrintf("Software-renders data/scenes_3d/<scene>.bfg to a 640x480 PNG. rotA = pitch, rotB = yaw (4096 = 360 deg).\n");
+		debugPrintf("Without a pose the scene's default arrival pose is used.\n");
+		return true;
+	}
+
+	Pose3D pose = Pose3D();
+	if (argc == 8) {
+		pose.x = atoi(argv[3]);
+		pose.y = atoi(argv[4]);
+		pose.z = atoi(argv[5]);
+		pose.rotA = atoi(argv[6]);
+		pose.rotB = atoi(argv[7]);
+	}
+
+	if (renderSceneToPNG(argv[1], argv[2], argc == 8 ? &pose : nullptr))
+		debugPrintf("Wrote %s\n", argv[2]);
+	else
+		debugPrintf("Rendering '%s' failed (see log)\n", argv[1]);
 	return true;
 }
 
