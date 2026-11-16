@@ -19,6 +19,7 @@
  *
  */
 
+#include "vangogh/page.h"
 #include "vangogh/world.h"
 #include "vangogh/bfg.h"
 #include "vangogh/spr.h"
@@ -329,8 +330,8 @@ inline int16 signedAngle(int32 a) {
 } // end of anonymous namespace
 
 World::World() : _box(0), _scene(-1), _prevScene(0), _groundProbe(500), _mouseLook(false),
-		_numObjects(0), _hoverObject(-1), _cursorKind(kCursorArrow), _shownKind(-1), _cursorsReady(false),
-		_glideDest(0), _glideLeft(0), _menuRequest(false), _numAnims(0), _framesInScene(0), _timerLimit(0),
+		_numObjects(0), _hoverObject(-1), _cursorKind(kCursorArrow), _shownKind(-1), _cursorHidden(false), _cursorsReady(false),
+		_glideDest(0), _glideLeft(0), _menuRequest(false), _overlay(false), _pageRequest(-1), _numAnims(0), _framesInScene(0), _timerLimit(0),
 		_voice(0), _trainSound(false), _clipActive(false), _clipScene(0), _clipPrev(0) {
 	buildTrig();
 	memset(_timer, 0, sizeof(_timer));
@@ -349,7 +350,13 @@ World::World() : _box(0), _scene(-1), _prevScene(0), _groundProbe(500), _mouseLo
 	_glideTo = Pose3D();
 }
 
+World::~World() {
+	_comp.free();
+}
+
 bool World::init() {
+	if (!_inv.init())
+		warning("Vangogh: inventory bar images unavailable");
 	Common::File f;
 	if (!f.open(Common::Path("sprites/curseurs.spr"))) {
 		warning("Vangogh: could not open sprites/curseurs.spr");
@@ -405,7 +412,14 @@ bool World::cursorImage(int kind, const byte *&pixels, int &w, int &h, int &hotX
 }
 
 void World::updateCursor() {
-	if (!_cursorsReady || _shownKind == _cursorKind)
+	if (!_cursorsReady)
+		return;
+	const bool hide = _cursorKind < 0;
+	if (hide != _cursorHidden) {
+		CursorMan.showMouse(!hide);
+		_cursorHidden = hide;
+	}
+	if (hide || _shownKind == _cursorKind)
 		return;
 	const byte *pixels, *palette;
 	int w, h, hx, hy;
@@ -414,6 +428,11 @@ void World::updateCursor() {
 	CursorMan.replaceCursorPalette(palette, 0, 256);
 	CursorMan.replaceCursor(pixels, w, h, hx, hy, 0);
 	_shownKind = _cursorKind;
+}
+
+void World::setCursor(int kind) {
+	_cursorKind = kind;
+	updateCursor();
 }
 
 bool World::takeMenuRequest() {
@@ -634,10 +653,19 @@ void World::frame(const WorldInput &in, float dt) {
 	stepAnims(CLIP((int)(dt + 0.5f), 1, 10));
 	sceneTick(CLIP((int)(dt + 0.5f), 1, 10));
 
-	pickAndAct(in);
-
+	// The inventory bar (Space) takes its own clicks; while the bar is under the pointer or an item is carried the
+	// scene does not see them.
 	if (in.space)
-		debug("Vangogh: inventory (Space) is not implemented");
+		_inv.toggle();
+	int stored = -1;
+	const bool consumed = _inv.update(_state, in.mouseX, in.mouseY, in.click, stored);
+	WorldInput sceneIn = in;
+	if (consumed || _inv.carried() >= 0 || _inv.inBar(in.mouseX, in.mouseY))
+		sceneIn.click = false;
+	pickAndAct(sceneIn);
+	if (_inv.carried() >= 0)
+		_cursorKind = -1;
+	composeOverlay(in.mouseX, in.mouseY);
 
 	// Scene tick: exits. Camera thresholds first (they are evaluated every frame), then Backspace.
 	if (_scene != kSceneMusee) {
@@ -652,6 +680,48 @@ void World::frame(const WorldInput &in, float dt) {
 			leaveToMuseum();
 		}
 	}
+}
+
+void World::composeOverlay(int mouseX, int mouseY) {
+	_overlay = _inv.visible() || _inv.carried() >= 0;
+	if (!_overlay)
+		return;
+	const Graphics::Surface &src = _renderer.surface();
+	if (_comp.w != src.w || _comp.h != src.h || _comp.format != src.format) {
+		_comp.free();
+		_comp.create(src.w, src.h, src.format);
+	}
+	for (int y = 0; y < src.h; y++)
+		memcpy(_comp.getBasePtr(0, y), src.getBasePtr(0, y), (size_t)src.w * src.format.bytesPerPixel);
+	_inv.draw(_comp, _state, mouseX, mouseY);
+}
+
+bool World::takePageRequest(int &page) {
+	if (_pageRequest < 0)
+		return false;
+	page = _pageRequest;
+	_pageRequest = -1;
+	return true;
+}
+
+bool World::returnFromPage(int target) {
+	// transition_commit reloads the world: the same scene at the saved pose, or the museum.
+	const int scene = _state.getByte(kOfsScene);
+	const int prev = _state.getByte(kOfsPrevScene);
+	_pageRequest = -1;
+	_inv.reset();
+	if (target == Page::kExitMuseum)
+		return enterScene(kSceneMusee, scene);
+	if (!enterScene(scene, prev))
+		return false;
+	Pose3D p;
+	p.x = (int16)_state.get(kOfsCamX);
+	p.y = (int16)_state.get(kOfsCamY);
+	p.z = (int16)_state.get(kOfsCamZ);
+	p.rotA = (int16)_state.get(kOfsCamRotA);
+	p.rotB = (int16)_state.get(kOfsCamRotB);
+	setPose(p);
+	return true;
 }
 
 void World::changeScene(int dest, int prev) {
@@ -779,8 +849,94 @@ void World::pickAndAct(const WorldInput &in) {
 		onObjectClick(_objects[_hoverObject].name, _objects[_hoverObject].type, distance);
 }
 
+namespace {
+
+/** A type-2 object: picking it up carries item @a item and sets its "taken" flag (world.md 6.4 item table). */
+struct Pickup {
+	byte scene;
+	const char *object;
+	byte item;
+	uint flag;
+};
+
+const Pickup kPickups[] = {
+	{ kSceneMusee, "etoile", 0, kOfsStarTaken },
+	{ kSceneMaisonet, "terre", 1, kMeEarthTaken },
+	{ kSceneMaisonet, "plume", 2, kMeFeatherTaken },
+	{ kSceneMangeurs, "theieres", 3, kMgKettleTaken },
+	{ kSceneMangeurs, "patat01", 4, kMgPotatoTaken },
+	{ kSceneCafe, "carte", 5, kCfMapTaken },
+	{ kSceneCafe, "briket", 6, kCfBriketTaken },
+	{ kScenePont, "apple01", 7, kPoAppleTaken },
+	{ kSceneChambre, "ombrelle", 8, kCbUmbrellaTaken },
+	{ kSceneCafe, "pichet", 9, kCfPitcherTaken },
+	{ kSceneChambre, "cadre", 10, kCbFrameTaken },
+	{ kSceneMaisonj, "escargot", 11, kMjSnailTaken },
+	{ kSceneChambre, "Object02", 12, kCbObject02Taken },
+	{ kSceneChambre, "camee", 13, kCbCameoTaken },
+	{ kSceneChambre, "shoes", 14, kCbShoesTaken },
+	{ kSceneChambre, "shoes01", 14, kCbShoesTaken },
+	{ kSceneChambre, "Object06", 14, kCbShoesTaken },
+	{ kSceneChambre, "Object09", 15, kCbObject09Taken },
+	{ kSceneCafe, "ombre", 16, kCfBilliardDone },
+	{ kSceneTerrasse, "lunette", 17, kTeGlassesTaken },
+	{ kSceneChambre, "Object07", 18, kCbObject07Taken },
+	{ kSceneCafe, "orloge", 19, kCfClockTaken },
+	{ kSceneHopiint, "BONNET", 20, kHiBonnetTaken },
+	{ kSceneHopiint, "LAMPE", 21, kHiLampTaken },
+	{ kSceneHopiint, "BOUGIE", 22, kHiCandleTaken },
+	{ kSceneHopiint, "CROIX", 23, kHiCrossTaken },
+	{ kSceneChambre, "mirroirmor", 24, kCbMirrorShardTaken },
+	{ kSceneCafe, "theiere", 25, kCfTeapotTaken },
+	{ kSceneTerrasse, "platode", 26, kTeDieTaken },
+	{ kSceneTerrasse, "lettre", 27, kTeLetterTaken },
+	{ kScenePont, "encre01", 28, kPoInkTaken },
+	{ kSceneJardin, "fuzz", 29, kJaFuzzTaken },
+	{ kSceneJardin, "rato", 30, kJaRatoTaken },
+	{ kSceneAuberge, "stetoscop", 31, kAuStethoscopeTaken },
+	{ kSceneChamp, "gun", 32, kChGunTaken },
+	{ kSceneEglise, "cerf", 33, kEgKiteDone },
+	{ kSceneEglise, "gerbe", 34, kEgSheafTaken }
+};
+
+}
+
+bool World::pickUpObject(const char *name) {
+	if (_inv.carried() >= 0)
+		return true;
+	for (uint i = 0; i < ARRAYSIZE(kPickups); i++) {
+		const Pickup &p = kPickups[i];
+		if (p.scene != _scene || scumm_stricmp(p.object, name) != 0)
+			continue;
+		_state.set(p.flag, 1);
+		if (p.item == 14) {
+			hideObj("shoes");
+			hideObj("shoes01");
+			hideObj("Object06");
+		} else {
+			hideObj(p.object);
+		}
+		if (p.item == 0)
+			setObjectType("vase", 3);	// the museum's vase opens page 0 once the star is taken (init: line "vase")
+		_inv.pickUp(p.item);
+		debug("Vangogh: picked up item %d (%s)", p.item, name);
+		return true;
+	}
+	return false;
+}
+
 void World::onObjectClick(const char *name, int type, float distance) {
 	debug("Vangogh: click %s '%s' (type %d, distance %.0f)", sceneName(_scene).c_str(), name, type, distance);
+
+	if (type == 2 && pickUpObject(name))
+		return;
+	if (type == 3) {
+		const int page = Page::launcherPage(_scene, name);
+		if (page >= 0) {
+			_pageRequest = page;
+			return;
+		}
+	}
 
 	// Per-scene action hook. Exits are data (kClickExits); puzzle logic for the other pickables is not
 	// implemented and plugs in here, keyed on (_scene, name, type), reading and writing the runtime types

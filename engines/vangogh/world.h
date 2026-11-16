@@ -30,6 +30,7 @@
 #include "vangogh/box3di.h"
 #include "vangogh/clip.h"
 #include "vangogh/gamestate.h"
+#include "vangogh/inventory.h"
 #include "vangogh/model3d.h"
 #include "vangogh/renderer3d.h"
 
@@ -74,10 +75,11 @@ struct WorldInput {
 	bool space;					///< inventory (pressed this frame)
 	bool esc;					///< options (pressed this frame)
 	bool click;					///< left button or Enter (pressed this frame)
+	bool mouseDown;				///< left button held (2D pages drop dragged items on release)
 	int mouseX, mouseY;			///< absolute, 0..639 / 0..479
 
 	WorldInput() : up(false), down(false), left(false), right(false), pgUp(false), pgDown(false), alt(false),
-		f1(false), backspace(false), space(false), esc(false), click(false), mouseX(320), mouseY(240) {}
+		f1(false), backspace(false), space(false), esc(false), click(false), mouseDown(false), mouseX(320), mouseY(240) {}
 };
 
 /**
@@ -90,6 +92,7 @@ struct WorldInput {
 class World {
 public:
 	World();
+	~World();
 
 	/** Decodes the 14 mouse cursors out of curseurs.spr; false if the file is unusable. */
 	bool init();
@@ -112,7 +115,7 @@ public:
 	/** Runs one frame of @p dt original ticks (dt = ms * 30 / 1000) and leaves the rendered frame in surface(). */
 	void frame(const WorldInput &in, float dt);
 
-	const Graphics::Surface &surface() const { return _clipActive ? _clip.surface() : _renderer.surface(); }
+	const Graphics::Surface &surface() const { return _clipActive ? _clip.surface() : (_overlay ? _comp : _renderer.surface()); }
 	int scene() const { return _scene; }
 	/** Index of the active collision volume (0 = BOX.3DI). */
 	int box() const { return _box; }
@@ -203,6 +206,18 @@ public:
 	const MovieClip &clip() const { return _clip; }
 	/** Plays data/movies/<name>.hnm full screen; when it ends (or is skipped by a click) scene @p thenScene is entered from @p thenPrev. */
 	bool playClip(const char *name, int thenScene, int thenPrev);
+	/** The 3D inventory bar (Space) and the carried item. */
+	Inventory &inventory() { return _inv; }
+	/** Hands the item to the bar as if it had just been picked up in the scene (script/console). */
+	void carryItem(int item) { _inv.pickUp(item); }
+	/** True once after a click on a page launcher (type 3 object), with the page index. */
+	bool takePageRequest(int &page);
+	/** Opens page @p page as if its launcher had been clicked. */
+	void requestPage(int page) { _pageRequest = page; }
+	/** Back from a 2D page: kExitResume re-enters the scene at the pose saved in the state block, kExitMuseum goes to the museum. */
+	bool returnFromPage(int target);
+	/** Overrides the cursor kind (-1 hides the pointer). */
+	void setCursor(int kind);
 	/** Leaves the scene for the museum (Backspace): plays the "r" clip first if the scene's puzzles are all solved. */
 	void leaveToMuseum();
 
@@ -220,6 +235,8 @@ private:
 	void pickAndAct(const WorldInput &in);
 	bool checkCameraExits();
 	void onObjectClick(const char *name, int type, float distance);
+	bool pickUpObject(const char *name);
+	void composeOverlay(int mouseX, int mouseY);
 	void startPaintingClick(int dest);
 	void startGlide(int dest);
 	void stepGlide();
@@ -278,6 +295,7 @@ private:
 
 	int _cursorKind;
 	int _shownKind;
+	bool _cursorHidden;
 	Cursor _cursors[kNumCursors];
 	byte _cursorPalette[256 * 3];
 	bool _cursorsReady;
@@ -287,6 +305,11 @@ private:
 	Pose3D _glideFrom, _glideTo;
 
 	bool _menuRequest;
+
+	Inventory _inv;
+	Graphics::Surface _comp;	///< renderer frame plus the inventory bar, when it is up
+	bool _overlay;
+	int _pageRequest;
 
 	// 3DA animation slots of the current scene (the exe's LoadAnims<scene> table).
 	enum { kMaxAnims = 8 };

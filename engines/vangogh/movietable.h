@@ -46,6 +46,9 @@ struct MovieEntry {
  */
 const MovieEntry *findMovie(const Common::String &name);
 
+/** The exe's movie index (sub_417380's first argument, 0..0x43), or nullptr if out of range. */
+const MovieEntry *movieByIndex(uint index);
+
 } // End of namespace Vangogh
 
 #endif // VANGOGH_MOVIETABLE_H

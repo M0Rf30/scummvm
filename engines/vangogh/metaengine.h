@@ -28,6 +28,9 @@ class VangoghMetaEngine : public AdvancedMetaEngine<ADGameDescription> {
 public:
 	const char *getName() const override;
 
+	/** Saves: slot list, delete, thumbnail/date/playtime meta infos, load at startup (extended save format). */
+	bool hasFeature(MetaEngineFeature f) const override;
+
 	Common::Error createInstance(OSystem *syst, Engine **engine, const ADGameDescription *desc) const override;
 };
 

@@ -34,6 +34,7 @@
 #include "graphics/screen.h"
 
 #include "vangogh/detection.h"
+#include "vangogh/page.h"
 #include "vangogh/world.h"
 #include "vangogh/sound.h"
 
@@ -72,10 +73,39 @@ private:
 	 */
 	void runScript(const Common::String &path);
 
-	/** Copies the world's frame to the screen. */
+	/** Copies the current frame (page or world) to the screen. */
 	void presentWorld(const World &world);
 
+	/**
+	 * One tick of the live game, shared by runWorld() and runScript(): the 2D page when one is open (40 ms), else the
+	 * 3D world (66 ms). Handles opening a page from a launcher click, leaving it (transition_commit target) and the
+	 * resume of a loaded page save. @p dt is the world's tick count.
+	 */
+	void gameStep(World &world, WorldInput &in, float dt);
+	/** Opens page @p page over the current world state. */
+	bool openPage(World &world, int page);
+	/** Frame period of the current mode in milliseconds. */
+	uint32 framePeriod() const;
+
 	World *_world;
+	Page *_page;
+
+	// Saves (see vangogh.cpp). Payload: "VGSV", version, resume flag, then GameState::sync.
+	bool _pageOpen;				///< a 2D page is open (set by the page code): saves record resume flag 1
+	bool _bootLoading;			///< launcher save_slot load in progress: no autosave over the slot being loaded
+	bool _pendingPageResume;	///< the loaded save asks to resume inside the 2D page named by the state block
+
+	Common::Error writeSaveState(Common::WriteStream *stream, GameState &state, uint32 resumeFlag);
+	/** Resume on quit: the exe's GGAME, kept in the autosave slot. */
+	void saveResume();
+	/**
+	 * Re-enters the world from @p state per the exe's load rules (flow.md 3.6): scene, previous scene and camera
+	 * from the block, NbTournesols sanity reset; @p resumeFlag 1 queues a 2D page resume.
+	 */
+	bool restoreState(const GameState &state, uint32 resumeFlag);
+	/** Loads the launcher's save_slot, if any (once the world exists). */
+	void bootLoadSlot();
+
 	/**
 	 * Waits for up to the given number of milliseconds, remaining
 	 * responsive to quit/return-to-launcher requests.
@@ -136,8 +166,35 @@ public:
 	}
 
 	bool hasFeature(EngineFeature f) const override {
-		return f == kSupportsReturnToLauncher;
+		return f == kSupportsReturnToLauncher || f == kSupportsLoadingDuringRuntime || f == kSupportsSavingDuringRuntime;
 	}
+
+	// ---- Saves ----
+
+	Common::Error saveGameStream(Common::WriteStream *stream, bool isAutosave = false) override;
+	Common::Error loadGameStream(Common::SeekableReadStream *stream) override;
+	/** Only in the 3D world or an idle page: not during arrival/departure clips or museum glides. */
+	bool canSaveGameStateCurrently(Common::U32String *msg = nullptr) override;
+	bool canLoadGameStateCurrently(Common::U32String *msg = nullptr) override;
+	bool canSaveAutosaveCurrently() override { return !_bootLoading && canSaveGameStateCurrently(); }
+	int getAutosaveSlot() const override { return 0; }
+
+	/**
+	 * The exe writes GAME<user><item> when item @p itemId is placed on its page (2D state 0x21); here it goes to the
+	 * autosave slot. Called by the page code after the placement is committed to the game state.
+	 */
+	void autosaveAfterPlacement(int itemId);
+
+	/** The page code tells whether a 2D page is open (saved as the resume flag). */
+	void setPageOpen(bool open) { _pageOpen = open; }
+	/** True once after a load that resumes inside a 2D page (the state block's page byte names it). */
+	bool takePageResume() { const bool r = _pendingPageResume; _pendingPageResume = false; return r; }
+
+	/**
+	 * Converts an original GAME<uu><ss>.BIN (0x46c bytes) or GGAME<u>.BIN (0x470 bytes) read from @p stream into
+	 * ScummVM slot @p slot.
+	 */
+	bool importOriginalSave(Common::SeekableReadStream *stream, int slot);
 };
 
 extern VangoghEngine *g_engine;

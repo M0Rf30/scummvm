@@ -66,6 +66,15 @@ private:
 
 	/** `reach` - museum gating: distance of each painting to the walkable floor of the active collision volume. */
 	bool Cmd_reach(int argc, const char **argv);
+
+	/** `import <GAME*.BIN|GGAME*.BIN> <slot>` - converts an original save file (native path) into a ScummVM slot. */
+	bool Cmd_import(int argc, const char **argv);
+
+	/** `page <0-24>` - opens a 2D page over the running world as if its launcher had been clicked. */
+	bool Cmd_page(int argc, const char **argv);
+
+	/** `give <item>` - carries item <0-34> in the 3D world as if it had just been picked up. */
+	bool Cmd_give(int argc, const char **argv);
 public:
 	Console();
 	~Console() override;

@@ -25,6 +25,8 @@
 #include "vangogh/console.h"
 #include "vangogh/hnmplayer.h"
 #include "vangogh/spr.h"
+#include "vangogh/page.h"
+#include "vangogh/inventory.h"
 #include "vangogh/world.h"
 #include "vangogh/tgp.h"
 #include "common/archive.h"
@@ -35,10 +37,13 @@
 #include "common/tokenizer.h"
 #include "common/file.h"
 #include "common/rect.h"
+#include "common/serializer.h"
+#include "common/savefile.h"
 #include "common/system.h"
 #include "common/textconsole.h"
 #include "common/util.h"
 #include "engines/util.h"
+#include "engines/metaengine.h"
 #include "graphics/cursorman.h"
 #include "graphics/surface.h"
 #include "image/tga.h"
@@ -51,11 +56,13 @@ namespace Vangogh {
 VangoghEngine *g_engine;
 
 VangoghEngine::VangoghEngine(OSystem *syst, const ADGameDescription *gameDesc) : Engine(syst),
-	_gameDescription(gameDesc), _randomSource("Vangogh"), _world(nullptr), _sound(new Sound()) {
+	_gameDescription(gameDesc), _randomSource("Vangogh"), _world(nullptr), _page(new Page()),
+	_pageOpen(false), _bootLoading(false), _pendingPageResume(false), _sound(new Sound()) {
 	g_engine = this;
 }
 
 VangoghEngine::~VangoghEngine() {
+	delete _page;
 	delete _sound;
 	delete _screen;
 }
@@ -310,6 +317,7 @@ namespace {
 
 // Original frame period (timer sub_4336b0, 66 ms) and ticks per second of the exe's clock.
 const uint32 kFrameMs = 66;
+const uint32 kPageFrameMs = 40;	// 2D page tick (timer sub_4336b0 at 40 ms in mode 1)
 const float kTicksPerMs = 30.0f / 1000.0f;
 
 /** Folds one ScummVM event into the per-frame input (held keys persist, edges are cleared by the caller). */
@@ -323,6 +331,10 @@ void mapWorldEvent(const Common::Event &event, WorldInput &in) {
 		in.mouseX = CLIP<int>(event.mouse.x, 0, 639);
 		in.mouseY = CLIP<int>(event.mouse.y, 0, 479);
 		in.click = true;
+		in.mouseDown = true;
+		break;
+	case Common::EVENT_LBUTTONUP:
+		in.mouseDown = false;
 		break;
 	case Common::EVENT_KEYDOWN:
 	case Common::EVENT_KEYUP: {
@@ -359,8 +371,57 @@ inline void clearEdges(WorldInput &in) {
 } // end of anonymous namespace
 
 void VangoghEngine::presentWorld(const World &world) {
-	_screen->blitFrom(world.surface());
+	_screen->blitFrom(_page->active() ? _page->surface() : world.surface());
 	_screen->update();
+}
+
+uint32 VangoghEngine::framePeriod() const {
+	return _page->active() ? kPageFrameMs : kFrameMs;
+}
+
+bool VangoghEngine::openPage(World &world, int pageIndex) {
+	world.snapshotState();
+	if (!_page->open(pageIndex, world.state(), _sound)) {
+		warning("Vangogh: could not open page %d", pageIndex);
+		return false;
+	}
+	debug("Vangogh: page %d (%s) opened", pageIndex, Page::pageName(pageIndex));
+	setPageOpen(true);
+	return true;
+}
+
+void VangoghEngine::gameStep(World &world, WorldInput &in, float dt) {
+	if (_page->active()) {
+		_page->tick(in);
+		world.setCursor(_page->cursorKind());
+		if (_page->takeMenuRequest())
+			openMainMenuDialog();
+		if (takePageResume()) {
+			// A save made inside a page was loaded: reopen the page the state block names.
+			_page->close();
+			if (!openPage(world, world.state().getByte(kOfsPage)))
+				setPageOpen(false);
+			return;
+		}
+		if (_page->finished()) {
+			const int target = _page->exitTarget();
+			debug("Vangogh: page %d closed, target %d", _page->pageIndex(), target);
+			_page->close();
+			setPageOpen(false);
+			world.returnFromPage(target);
+		}
+		return;
+	}
+
+	world.frame(in, dt);
+	if (takePageResume()) {
+		if (!openPage(world, world.state().getByte(kOfsPage)))
+			setPageOpen(false);
+		return;
+	}
+	int page;
+	if (world.takePageRequest(page) && !openPage(world, page))
+		setPageOpen(false);
 }
 
 void VangoghEngine::runWorld() {
@@ -373,6 +434,8 @@ void VangoghEngine::runWorld() {
 	}
 	_world = &world;
 	CursorMan.showMouse(true);
+
+	bootLoadSlot();
 
 	WorldInput in;
 	uint32 last = g_system->getMillis();
@@ -388,7 +451,7 @@ void VangoghEngine::runWorld() {
 		const float dt = CLIP<float>((float)(frameStart - last) * kTicksPerMs, 1.0f, 10.0f);
 		last = frameStart;
 
-		world.frame(in, dt);
+		gameStep(world, in, dt);
 		presentWorld(world);
 		world.updateCursor();
 
@@ -398,9 +461,10 @@ void VangoghEngine::runWorld() {
 			getDebugger()->onFrame();
 
 		const uint32 spent = g_system->getMillis() - frameStart;
-		if (spent < kFrameMs)
-			g_system->delayMillis(kFrameMs - spent);
+		if (spent < framePeriod())
+			g_system->delayMillis(framePeriod() - spent);
 	}
+	saveResume();
 	_world = nullptr;
 }
 
@@ -413,9 +477,8 @@ static bool writeSurface(const Graphics::Surface &surf, const Common::String &pa
 	return ok;
 }
 
-static bool writeShot(const World &world, int mouseX, int mouseY, const Common::String &path) {
+static bool writeShot(const Graphics::Surface &src, const World &world, int mouseX, int mouseY, const Common::String &path) {
 	// Copy the framebuffer and draw the current cursor sprite on it, since PNGs of the surface alone carry no pointer.
-	const Graphics::Surface &src = world.surface();
 	Graphics::Surface shot;
 	shot.copyFrom(src);
 
@@ -461,6 +524,16 @@ void VangoghEngine::runScript(const Common::String &path) {
 	//   objects            log the scene's objects with their runtime types
 	//   reach              log the museum paintings' distance to the walkable floor
 	//   movie <name> <frame> <out.png>  play a movie-table clip (CVY mask included) to frame N and save its surface
+	//   save <slot> [desc] save the game to a ScummVM slot (refused like the menu would: not during clips/glides)
+	//   load <slot>        load a ScummVM slot (the launcher's save_slot key does the same at boot)
+	//   autosave <item>    autosaveAfterPlacement(item): the exe's GAME save on placing an item
+	//   import <file> <slot>  convert an original GAME*.BIN / GGAME*.BIN (native path) into a slot
+	//   down / up          left button pressed (with a click edge) / released: drags drop on release
+	//   page <n>           open 2D page n over the current state
+	//   give <item>        carry item n in 3D as if it had just been picked up
+	//   pagestate [tag]    log the page's state machine state
+	//   spr <name> <cell> <out.png>  log a sprite's cell count/size and draw one cell
+	//   tgp <name> [out.png]         log a TGP's size and save its top-left 640x480
 	//   print              log scene, pose, hovered object and cursor kind
 	//   shot <file.png>    save the current frame with the cursor drawn on it
 	Common::FSNode scriptNode(Common::Path(path, '/'));
@@ -478,6 +551,7 @@ void VangoghEngine::runScript(const Common::String &path) {
 		return;
 	}
 	_world = &world;
+	bootLoadSlot();
 
 	WorldInput in;
 	const float dt = (float)kFrameMs * kTicksPerMs;
@@ -526,16 +600,63 @@ void VangoghEngine::runScript(const Common::String &path) {
 			in.mouseY = CLIP(atoi(a2.c_str()), 0, 479);
 		} else if (cmd == "click") {
 			in.click = true;
+		} else if (cmd == "down") {
+			in.click = in.mouseDown = true;
+		} else if (cmd == "up") {
+			in.mouseDown = false;
+		} else if (cmd == "page") {
+			// Same route as clicking a launcher: the next frame hands the request to gameStep().
+			world.requestPage(atoi(a1.c_str()));
+			gameStep(world, in, dt);
+		} else if (cmd == "give") {
+			world.carryItem(atoi(a1.c_str()));
+		} else if (cmd == "pagestate") {
+			debug("SCRIPT pagestate %s page=%d state=%s bar=%d drag=%d cursor=%d", a1.c_str(), _page->pageIndex(),
+				_page->stateName(), _page->barVisible(), _page->dragItem(), world.cursorKind());
+		} else if (cmd == "spr") {
+			// spr <name> <cell> <out.png>: log the sprite's cell sizes and draw one cell centred / at its origin
+			UISprite sp;
+			if (!sp.loadSpr(a1)) {
+				warning("Vangogh: script:%d: cannot load sprite '%s'", lineNo, a1.c_str());
+			} else {
+				const uint cellNo = atoi(a2.c_str());
+				debug("SCRIPT spr '%s' cells=%u mode=%d cell%u=%dx%d", a1.c_str(), sp.numCells(), (int)sp.mode(), cellNo, sp.width(cellNo), sp.height(cellNo));
+#ifdef USE_PNG
+				Graphics::Surface out;
+				out.create(640, 480, g_system->getScreenFormat());
+				memset(out.getPixels(), 0x40, out.pitch * out.h);
+				sp.blit(out, cellNo, 320, 240);
+				writeSurface(out, a3);
+				out.free();
+#endif
+			}
+		} else if (cmd == "tgp") {
+			Graphics::Surface img;
+			if (!loadTgpImage(a1, img)) {
+				warning("Vangogh: script:%d: cannot load tgp '%s'", lineNo, a1.c_str());
+			} else {
+				debug("SCRIPT tgp '%s' %dx%d", a1.c_str(), img.w, img.h);
+#ifdef USE_PNG
+				if (!a2.empty()) {
+					Graphics::Surface out;
+					out.create(MIN<int>(img.w, 640), MIN<int>(img.h, 480), img.format);
+					blitRect(out, img, 0, 0, out.w, out.h, 0, 0);
+					writeSurface(out, a2);
+					out.free();
+				}
+#endif
+				img.free();
+			}
 		} else if (cmd == "step") {
 			const int n = atoi(a1.c_str());
 			for (int i = 0; i < n && !shouldQuit(); i++) {
 				const uint32 frameStart = g_system->getMillis();
-				world.frame(in, dt);
+				gameStep(world, in, dt);
 				clearEdges(in);
 				presentWorld(world);
 				world.updateCursor();
-				if (a2 == "rt" && g_system->getMillis() - frameStart < kFrameMs)
-					g_system->delayMillis(kFrameMs - (g_system->getMillis() - frameStart));
+				if (a2 == "rt" && g_system->getMillis() - frameStart < framePeriod())
+					g_system->delayMillis(framePeriod() - (g_system->getMillis() - frameStart));
 			}
 		} else if (cmd == "snd") {
 			// snd <name> [loop]: load+play via Sound, wait (max 3 s real time), log state
@@ -611,13 +732,28 @@ void VangoghEngine::runScript(const Common::String &path) {
 #endif
 				clip.close();
 			}
+		} else if (cmd == "save") {
+			Common::U32String why;
+			if (!canSaveGameStateCurrently(&why))
+				warning("Vangogh: script:%d: cannot save now", lineNo);
+			else
+				debug("SCRIPT save slot %d: %s", atoi(a1.c_str()), saveGameState(atoi(a1.c_str()), a2.empty() ? "Script" : a2, false).getCode() == Common::kNoError ? "ok" : "FAILED");
+		} else if (cmd == "load") {
+			debug("SCRIPT load slot %d: %s", atoi(a1.c_str()), loadGameState(atoi(a1.c_str())).getCode() == Common::kNoError ? "ok" : "FAILED");
+		} else if (cmd == "autosave") {
+			autosaveAfterPlacement(atoi(a1.c_str()));
+		} else if (cmd == "import") {
+			Common::FSNode node(Common::Path(a1, '/'));
+			Common::SeekableReadStream *in2 = node.createReadStream();
+			debug("SCRIPT import %s -> slot %d: %s", a1.c_str(), atoi(a2.c_str()), in2 && importOriginalSave(in2, atoi(a2.c_str())) ? "ok" : "FAILED");
+			delete in2;
 		} else if (cmd == "print") {
 			const Pose3D p = world.pose();
 			debug("SCRIPT %s scene=%s box=%d pose=%d,%d,%d rot=%d,%d hover='%s' cursor=%d", a1.c_str(),
 				world.sceneName(world.scene()).c_str(), world.box(), p.x, p.y, p.z, p.rotA, p.rotB, world.hoverName(), world.cursorKind());
 		} else if (cmd == "shot") {
 #ifdef USE_PNG
-			writeShot(world, in.mouseX, in.mouseY, a1);
+			writeShot(_page->active() ? _page->surface() : world.surface(), world, in.mouseX, in.mouseY, a1);
 #else
 			warning("Vangogh: script: this build has no PNG support");
 #endif
@@ -628,6 +764,146 @@ void VangoghEngine::runScript(const Common::String &path) {
 
 	delete stream;
 	_world = nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Saves. The exe has GAME<user><item>.BIN (one per placed item) and GGAME<user>.BIN (the continue file, written on
+// quit); ScummVM slots hold GameState::sync (the same two blocks) behind a small versioned header. The autosave slot
+// plays both roles. Layout: "VGSV", u32 version, u32 resume flag (1 = 2D page, 0 = 3D world), state (0x46c bytes).
+
+namespace {
+const uint32 kSaveMagic = MKTAG('V', 'G', 'S', 'V');
+const uint32 kSaveVersion = 1;
+const int kOrigGameSize = GameState::kSaveSize;		// GAME<uu><ss>.BIN
+const int kOrigGGameSize = 4 + GameState::kSaveSize;	// GGAME<u>.BIN: resume flag first
+}
+
+Common::Error VangoghEngine::writeSaveState(Common::WriteStream *stream, GameState &state, uint32 resumeFlag) {
+	stream->writeUint32LE(kSaveMagic);
+	stream->writeUint32LE(kSaveVersion);
+	stream->writeUint32LE(resumeFlag);
+	Common::Serializer ser(nullptr, stream);
+	state.sync(ser);
+	return stream->err() ? Common::kWritingFailed : Common::kNoError;
+}
+
+Common::Error VangoghEngine::saveGameStream(Common::WriteStream *stream, bool isAutosave) {
+	if (!_world || _world->scene() < 0)
+		return Common::kWritingFailed;
+	_world->snapshotState();
+	return writeSaveState(stream, _world->state(), _pageOpen ? 1 : 0);
+}
+
+bool VangoghEngine::restoreState(const GameState &state, uint32 resumeFlag) {
+	if (!_world)
+		return false;
+	const int scene = state.getByte(kOfsScene);
+	const int prev = state.getByte(kOfsPrevScene);
+	if (scene >= kNumScenes || prev >= kNumScenes)
+		return false;
+
+	// The state first: scene init reads it (hidden nodes, collision volume, chambre variant, ...).
+	_world->state() = state;
+	GameState &st = _world->state();
+
+	// load_game fix-up 5: the sunflower counter restarts at 0 when the next wing begins.
+	const byte sun = st.getByte(kOfsSunflowers);
+	if ((sun == 3 && !st.isSet(kOfsCurAct2)) || (sun == 0xf && !st.isSet(kOfsCurAct3)))
+		st.setByte(kOfsSunflowers, 0);
+
+	if (!_world->enterScene(scene, prev))
+		return false;
+
+	Pose3D p;
+	p.x = (int16)st.get(kOfsCamX);
+	p.y = (int16)st.get(kOfsCamY);
+	p.z = (int16)st.get(kOfsCamZ);
+	p.rotA = (int16)st.get(kOfsCamRotA);
+	p.rotB = (int16)st.get(kOfsCamRotB);
+	_world->setPose(p);
+
+	_pageOpen = resumeFlag != 0;
+	_pendingPageResume = _pageOpen;
+	return true;
+}
+
+Common::Error VangoghEngine::loadGameStream(Common::SeekableReadStream *stream) {
+	if (!_world)
+		return Common::kReadingFailed;
+	if (stream->readUint32LE() != kSaveMagic)
+		return Common::kReadingFailed;
+	if (stream->readUint32LE() != kSaveVersion)
+		return Common::kReadingFailed;
+	const uint32 resumeFlag = stream->readUint32LE();
+
+	GameState state;
+	Common::Serializer ser(stream, nullptr);
+	state.sync(ser);
+	if (stream->err() || stream->eos())
+		return Common::kReadingFailed;
+
+	return restoreState(state, resumeFlag) ? Common::kNoError : Common::kReadingFailed;
+}
+
+bool VangoghEngine::canSaveGameStateCurrently(Common::U32String *msg) {
+	return _world && _world->scene() >= 0 && !_world->clipActive() && _world->glideFrames() == 0;
+}
+
+bool VangoghEngine::canLoadGameStateCurrently(Common::U32String *msg) {
+	return _world && !_world->clipActive() && _world->glideFrames() == 0;
+}
+
+void VangoghEngine::autosaveAfterPlacement(int itemId) {
+	if (!_world || _world->scene() < 0)
+		return;
+	debug("Vangogh: autosave after placing item %d", itemId);
+	if (saveGameState(getAutosaveSlot(), "Autosave", true).getCode() != Common::kNoError)
+		warning("Vangogh: autosave failed");
+}
+
+void VangoghEngine::saveResume() {
+	if (!_world || _world->scene() < 0 || _world->clipActive() || _world->glideFrames() > 0)
+		return;
+	if (saveGameState(getAutosaveSlot(), "Autosave", true).getCode() != Common::kNoError)
+		warning("Vangogh: could not save the resume state");
+}
+
+void VangoghEngine::bootLoadSlot() {
+	if (!ConfMan.hasKey("save_slot"))
+		return;
+	const int slot = ConfMan.getInt("save_slot");
+	if (slot < 0)
+		return;
+	_bootLoading = true;
+	if (loadGameState(slot).getCode() != Common::kNoError)
+		warning("Vangogh: could not load save slot %d", slot);
+	_bootLoading = false;
+}
+
+bool VangoghEngine::importOriginalSave(Common::SeekableReadStream *stream, int slot) {
+	const int64 size = stream->size();
+	uint32 flag = 0;
+	if (size == kOrigGGameSize)
+		flag = stream->readUint32LE();
+	else if (size != kOrigGameSize)
+		return false;
+
+	GameState state;
+	Common::Serializer ser(stream, nullptr);
+	state.sync(ser);
+	if (stream->err() || state.getByte(kOfsScene) >= kNumScenes || flag > 1)
+		return false;
+
+	Common::OutSaveFile *out = _saveFileMan->openForSaving(getSaveStateName(slot));
+	if (!out)
+		return false;
+	const bool ok = writeSaveState(out, state, flag).getCode() == Common::kNoError;
+	if (ok) {
+		getMetaEngine()->appendExtendedSave(out, getTotalPlayTime(), "Imported", false);
+		out->finalize();
+	}
+	delete out;
+	return ok;
 }
 
 void VangoghEngine::waitMillis(uint32 ms) {

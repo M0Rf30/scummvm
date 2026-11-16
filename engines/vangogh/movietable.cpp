@@ -102,4 +102,8 @@ const MovieEntry *findMovie(const Common::String &name) {
 	return nullptr;
 }
 
+const MovieEntry *movieByIndex(uint index) {
+	return index < ARRAYSIZE(kMovieTable) ? &kMovieTable[index] : nullptr;
+}
+
 } // End of namespace Vangogh

@@ -17,6 +17,8 @@ MODULE_OBJS = \
 	scenelogic.o \
 	renderer3d.o \
 	world.o \
+	page.o \
+	inventory.o \
 	sound.o \
 	hnmplayer.o \
 	metaengine.o

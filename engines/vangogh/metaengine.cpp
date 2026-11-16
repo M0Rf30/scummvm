@@ -27,6 +27,18 @@ const char *VangoghMetaEngine::getName() const {
 	return "vangogh";
 }
 
+bool VangoghMetaEngine::hasFeature(MetaEngineFeature f) const {
+	return f == kSupportsListSaves ||
+		f == kSupportsLoadingDuringStartup ||
+		f == kSupportsDeleteSave ||
+		f == kSavesSupportMetaInfo ||
+		f == kSavesSupportThumbnail ||
+		f == kSavesSupportCreationDate ||
+		f == kSavesSupportPlayTime ||
+		f == kSimpleSavesNames ||
+		f == kSavesUseExtendedFormat;
+}
+
 Common::Error VangoghMetaEngine::createInstance(OSystem *syst, Engine **engine, const ADGameDescription *desc) const {
 	*engine = new Vangogh::VangoghEngine(syst, desc);
 	return Common::kNoError;

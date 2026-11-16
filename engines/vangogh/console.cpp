@@ -24,6 +24,9 @@
 #include "vangogh/world.h"
 #include "vangogh/vangogh.h"
 
+#include "common/fs.h"
+#include "common/stream.h"
+
 namespace Vangogh {
 
 Console::Console() : GUI::Debugger() {
@@ -40,6 +43,9 @@ Console::Console() : GUI::Debugger() {
 	registerCmd("anim",     WRAP_METHOD(Console, Cmd_anim));
 	registerCmd("objects",  WRAP_METHOD(Console, Cmd_objects));
 	registerCmd("reach",    WRAP_METHOD(Console, Cmd_reach));
+	registerCmd("import",   WRAP_METHOD(Console, Cmd_import));
+	registerCmd("page",     WRAP_METHOD(Console, Cmd_page));
+	registerCmd("give",     WRAP_METHOD(Console, Cmd_give));
 }
 
 Console::~Console() {
@@ -196,6 +202,50 @@ bool Console::Cmd_objects(int argc, const char **argv) {
 	Common::String out;
 	world->describeObjects(out);
 	debugPrintf("%s", out.c_str());
+	return true;
+}
+
+bool Console::Cmd_import(int argc, const char **argv) {
+	if (argc != 3) {
+		debugPrintf("Usage: %s <GAME*.BIN|GGAME*.BIN> <slot>\n", argv[0]);
+		return true;
+	}
+	const int slot = atoi(argv[2]);
+	Common::FSNode node(Common::Path(argv[1], '/'));
+	Common::SeekableReadStream *stream = node.createReadStream();
+	if (!stream) {
+		debugPrintf("Cannot open '%s'\n", argv[1]);
+		return true;
+	}
+	debugPrintf("Import into slot %d: %s\n", slot, g_engine->importOriginalSave(stream, slot) ? "ok" : "failed (see log)");
+	delete stream;
+	return true;
+}
+
+bool Console::Cmd_page(int argc, const char **argv) {
+	World *world = g_engine->world();
+	if (argc != 2 || !world) {
+		debugPrintf("Usage: %s <0-%d> (needs the running world)\n", argv[0], Page::kNumPages - 1);
+		return true;
+	}
+	const int page = atoi(argv[1]);
+	if (page < 0 || page >= Page::kNumPages) {
+		debugPrintf("Page out of range\n");
+		return true;
+	}
+	world->requestPage(page);
+	debugPrintf("Page %d (%s) opens on the next frame\n", page, Page::pageName(page));
+	return true;
+}
+
+bool Console::Cmd_give(int argc, const char **argv) {
+	World *world = g_engine->world();
+	const int item = argc == 2 ? atoi(argv[1]) : -1;
+	if (!world || item < 0 || item >= GameState::kNumItems) {
+		debugPrintf("Usage: %s <0-%d> (needs the running world)\n", argv[0], GameState::kNumItems - 1);
+		return true;
+	}
+	world->carryItem(item);
 	return true;
 }
 
