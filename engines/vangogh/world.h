@@ -172,6 +172,8 @@ public:
 
 	/** Name of the pickable object under the mouse as of the last frame ("" if none). */
 	const char *hoverName() const { return _hoverName; }
+	/** Number of object clicks dispatched so far (the test bot checks that its click landed). */
+	uint clickCount() const { return _clickCount; }
 	/** Cursor kind (0..13, the exe's cursor table index) to show for the last frame. */
 	int cursorKind() const { return _cursorKind; }
 	/** Makes the OS cursor match cursorKind() (touches CursorMan only when the kind changed). */
@@ -357,6 +359,7 @@ private:
 	Object _objects[kMaxObjects];
 	uint _numObjects;
 	int _hoverObject;
+	uint _clickCount;
 	char _hoverName[14];
 
 	int _cursorKind;

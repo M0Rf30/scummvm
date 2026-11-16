@@ -331,16 +331,24 @@ void Renderer3D::nodeViewPos(uint node, float out[3]) const {
 bool Renderer3D::nodeViewCentroid(const Model3D &model, uint node, float out[3]) const {
 	if (_view.size() != model.numVertices())
 		return false;
-	const Model3D::Vertex *verts = model.vertices();
+	// A node owns its face lists; the vertices those faces use may belong to another node (the maisonj `pendule` quad
+	// borrows the `world` vertices), so the centroid is taken over the faces' vertices.
+	const Model3D::Face *faces = model.faces();
 	double sum[3] = { 0.0, 0.0, 0.0 };
 	uint n = 0;
-	for (uint i = 0; i < model.numVertices(); i++) {
-		if (verts[i].node != node)
+	for (uint l = 0; l < model.numLists(); l++) {
+		const Model3D::FaceList &fl = model.list(l);
+		if (fl.node != node)
 			continue;
-		sum[0] += _view[i].x;
-		sum[1] += _view[i].y;
-		sum[2] += _view[i].z;
-		n++;
+		for (uint f = 0; f < fl.numFaces; f++) {
+			for (int k = 0; k < 3; k++) {
+				const uint vi = faces[fl.firstFace + f].v[k];
+				sum[0] += _view[vi].x;
+				sum[1] += _view[vi].y;
+				sum[2] += _view[vi].z;
+				n++;
+			}
+		}
 	}
 	if (!n)
 		return false;

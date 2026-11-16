@@ -799,7 +799,9 @@ void Page::tickIdle(const WorldInput &in) {
 	const PageDesc &d = kPages[_page];
 	const bool barHidden = _barState == kBarHidden;
 	const bool barShown = _barState == kBarShown;
-	const bool loupeUsable = _loupe == kLoupeVisible;
+	// Opening the bar plays LoupeIn (sub_413410): the loupe is gone while the bar is out, so its rectangles (which overlap
+	// the right-hand bar slots on the pages with the loupe at x ~330) do not take the clicks.
+	const bool loupeUsable = _loupe == kLoupeVisible && barHidden;
 
 	if (in.backspace && _state == kIdle) {
 		commitAndExit(kExitResume);

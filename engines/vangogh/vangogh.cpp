@@ -643,8 +643,17 @@ void VangoghEngine::botCommand(World &world, WorldInput &in, float dt, const Com
 		if (!seen) {
 			warning("Vangogh: script:%d: use %s: not visible from anywhere reachable", lineNo, a1.c_str());
 		} else {
-			in.click = true;
-			idle(8);
+			// The target can move between the aim and the click frame (looping animations): re-aim until a click lands.
+			for (int attempt = 0; attempt < 8 && !shouldQuit(); attempt++) {
+				const uint before = world.clickCount();
+				in.click = true;
+				idle(8);
+				if (world.clickCount() != before)
+					break;
+				debug("SCRIPT use %s: click %d missed, aiming again", a1.c_str(), attempt + 1);
+				if (!hoverOn(a1.c_str(), true))
+					break;
+			}
 		}
 	} else if (cmd == "plan") {
 		// plan <node> [dist]: is there a route to within dist of the node, and how long
@@ -664,7 +673,9 @@ void VangoghEngine::botCommand(World &world, WorldInput &in, float dt, const Com
 	} else if (cmd == "store") {
 		in.mouseX = 320;
 		in.mouseY = 470;
-		idle(4);
+		// The bar only takes the drop once it has slid fully in.
+		for (int i = 0; i < 60 && world.inventory().state() != Inventory::kShown; i++)
+			idle(1);
 		in.click = true;
 		idle(4);
 		in.mouseX = 320;
@@ -830,6 +841,49 @@ void VangoghEngine::runScriptStream(World &world, WorldInput &in, float dt, Comm
 				world.updateCursor();
 				if (a2 == "rt" && g_system->getMillis() - frameStart < framePeriod())
 					g_system->delayMillis(framePeriod() - (g_system->getMillis() - frameStart));
+			}
+		} else if (cmd == "pdrag") {
+			// pdrag <item> <x> <y>: open the page's bar, scroll to the item, drag it to x,y and drop it
+			auto frames = [&](int n) {
+				for (int i = 0; i < n && !shouldQuit(); i++) {
+					gameStep(world, in, dt);
+					clearEdges(in);
+					presentWorld(world);
+					world.updateCursor();
+				}
+			};
+			const int item = atoi(a1.c_str());
+			if (!_page->active() || _page->barIndexOf(item) < 0) {
+				warning("Vangogh: script:%d: pdrag: item %d is not in the page bar", lineNo, item);
+			} else {
+				if (!_page->barVisible()) {
+					in.space = true;
+					frames(1);
+				}
+				for (int i = 0; i < 60 && !_page->barIsShown(); i++)
+					frames(1);
+				for (int guard = 0; guard < 20; guard++) {
+					const int idx = _page->barIndexOf(item), sc = _page->barScroll();
+					if (idx >= sc && idx < sc + 6)
+						break;
+					in.mouseX = idx < sc ? 24 : 520;
+					in.mouseY = 450;
+					frames(2);
+					in.click = true;
+					frames(2);
+				}
+				const int k = _page->barIndexOf(item) - _page->barScroll();
+				in.mouseX = 101 + 70 * k;
+				in.mouseY = 450;
+				frames(2);
+				in.click = in.mouseDown = true;
+				frames(2);
+				in.mouseX = atoi(a2.c_str());
+				in.mouseY = atoi(a3.c_str());
+				frames(2);
+				in.mouseDown = false;
+				frames(3);
+				debug("SCRIPT pdrag item %d (bar slot %d) -> %s,%s", item, k, a2.c_str(), a3.c_str());
 			}
 		} else if (cmd == "snd") {
 			// snd <name> [loop]: load+play via Sound, wait (max 3 s real time), log state

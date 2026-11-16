@@ -330,7 +330,7 @@ inline int16 signedAngle(int32 a) {
 } // end of anonymous namespace
 
 World::World() : _box(0), _scene(-1), _prevScene(0), _groundProbe(500), _mouseLook(false),
-		_numObjects(0), _hoverObject(-1), _cursorKind(kCursorArrow), _shownKind(-1), _cursorHidden(false), _cursorsReady(false),
+		_numObjects(0), _hoverObject(-1), _clickCount(0), _cursorKind(kCursorArrow), _shownKind(-1), _cursorHidden(false), _cursorsReady(false),
 		_glideDest(0), _glideLeft(0), _menuRequest(false), _overlay(false), _pageRequest(-1), _numAnims(0), _framesInScene(0), _timerLimit(0),
 		_voice(0), _trainSound(false), _clipActive(false), _clipScene(0), _clipPrev(0) {
 	buildTrig();
@@ -1086,6 +1086,7 @@ bool World::pickUpObject(const char *name) {
 }
 
 void World::onObjectClick(const char *name, int type, float distance) {
+	_clickCount++;
 	debug("Vangogh: click %s '%s' (type %d, distance %.0f)", sceneName(_scene).c_str(), name, type, distance);
 
 	if (sceneClick(name, type, distance))
@@ -1118,7 +1119,11 @@ void World::onObjectClick(const char *name, int type, float distance) {
 		}
 		return;
 	}
-	debug("Vangogh: no action implemented for '%s' in %s", name, sceneName(_scene).c_str());
+	// Type 255 is the exe's "inert" hotspot byte (world.md 6.2): no hover cursor, and the click falls through unhandled.
+	if (type == 255)
+		debug("Vangogh: '%s' in %s is inactive (type 255), click ignored", name, sceneName(_scene).c_str());
+	else
+		debug("Vangogh: no action implemented for '%s' in %s (type %d)", name, sceneName(_scene).c_str(), type);
 }
 
 void World::startGlide(int dest) {

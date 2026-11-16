@@ -88,6 +88,16 @@ public:
 	const char *stateName() const;
 	bool barVisible() const { return _barState != kBarHidden; }
 	int dragItem() const { return _dragItem; }
+	bool barIsShown() const { return _barState == kBarShown; }
+	int barScroll() const { return _barScroll; }
+	/** Index of @a item in the bar list, or -1 when it is not there. */
+	int barIndexOf(int item) const {
+		for (int i = 0; i < _barCount; i++) {
+			if (_barList[i] == item)
+				return i;
+		}
+		return -1;
+	}
 
 private:
 	friend class PageGame;
