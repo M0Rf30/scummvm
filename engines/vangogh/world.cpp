@@ -696,6 +696,7 @@ void World::locateObjects() {
 		for (uint n = 0; n < _model.numNodes(); n++) {
 			if (scumm_stricmp(_model.node(n).name, o.name) == 0) {
 				o.node = n;
+				_renderer.setNodeKeyedPick(n, true);
 				break;
 			}
 		}

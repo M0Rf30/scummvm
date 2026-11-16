@@ -100,8 +100,11 @@ Renderer3D::~Renderer3D() {
 
 void Renderer3D::bindModel(const Model3D &model) {
 	_hidden.resize(model.numNodes());
-	if (_hidden.size())
+	_keyedPick.resize(model.numNodes());
+	if (_hidden.size()) {
 		memset(_hidden.begin(), 0, _hidden.size());
+		memset(_keyedPick.begin(), 0, _keyedPick.size());
+	}
 }
 
 void Renderer3D::setZoom(int zoom) {
@@ -310,7 +313,9 @@ int Renderer3D::pick(const Model3D &model, int x, int y, float *outDepth) {
 	_pickNode = -1;
 	for (uint l = 0; l < model.numLists(); l++) {
 		const Model3D::FaceList &fl = model.list(l);
-		if (_hidden[fl.node])
+		// sub_442460 clears the second rasteriser hook (dat_4fd0a4) while it traverses. The scenery's colour-keyed and
+		// blended polygons (the champ wheat) therefore do not hide what is behind them; the hotspots' own do count.
+		if (_hidden[fl.node] || ((fl.type == Model3D::kColorKeyed || fl.type == Model3D::kBlended) && !_keyedPick[fl.node]))
 			continue;
 		_curNode = fl.node;
 		for (uint f = 0; f < fl.numFaces; f++)
