@@ -41,8 +41,8 @@ namespace Vangogh {
  * hnm-apc-compat.md in the reversing notes -- embedded APC audio needs no
  * engine-specific decoding work, Video::HNMDecoder handles it once
  * setSoundType()/loadFile()/start() are called, in that order) can drive
- * both a one-shot, skippable cutscene (playVideo()) and a looping scene
- * backdrop (Scene) without duplicating decoder setup/tear-down.
+ * both one-shot and looping playback without duplicating decoder
+ * setup/tear-down.
  *
  * Unlike playVideo()'s old inline loop, HNMPlayer does not block or poll
  * events itself: callers own the per-frame timing/event loop and call

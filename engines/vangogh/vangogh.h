@@ -34,8 +34,7 @@
 #include "graphics/screen.h"
 
 #include "vangogh/detection.h"
-#include "vangogh/navgraph.h"
-#include "vangogh/scene.h"
+#include "vangogh/world.h"
 
 namespace Vangogh {
 
@@ -58,30 +57,24 @@ private:
 	void showSplashImage(const Common::String &name, uint32 durationMs);
 
 	/**
-	 * Loads data/local/accueil.bmp, centers it on screen, and runs the
-	 * approximated Win32 menu (scene-flow.md sec.1.3's reversed BUTTON
-	 * rects): a "Go"/start click (or Enter) begins a new game, a "Quit"
-	 * click (or Escape) exits. The player-name EDIT control and the
-	 * save-slot rows are visual-only/logged no-ops (no save/load in this
-	 * milestone). Returns true if the game should start, false if the
-	 * player chose to quit (or the window was closed) here. Automated/
-	 * headless runs (ConfMan "boot_param") skip the wait and return true
-	 * immediately, exactly as if Start had been clicked.
+	 * The live game: the museum 3D world, one 66 ms World::frame() at a time,
+	 * until quit or return-to-launcher. The ScummVM launcher takes the place
+	 * of the original profile/start dialog.
 	 */
-	bool showAccueil();
+	void runWorld();
 
 	/**
-	 * The post-menu navigation loop: starts at musee (scene 0 -- new
-	 * games always start at the museum, scene-flow.md sec.1.5/sec.0.6)
-	 * and repeatedly calls enterScene(), following whatever transition/
-	 * hub/quit action each visit resolves (navgraph.h's NavAction), until
-	 * quit, the window closes, or a visit resolves no action at all.
-	 * Under automated/headless runs (ConfMan "boot_param"), only the
-	 * FIRST visit simulates a hotspot click (see Scene::run()); every
-	 * scene reached that way still fully loads/projects/plays out, but
-	 * the chain stops growing after that one real transition.
+	 * Headless test harness (ConfMan "vangogh_script"): runs the script file
+	 * at the given native path against a World, feeding synthetic input at a
+	 * fixed 66 ms tick and dumping PNGs. See runScript() in vangogh.cpp for
+	 * the command list.
 	 */
-	void runGame();
+	void runScript(const Common::String &path);
+
+	/** Copies the world's frame to the screen. */
+	void presentWorld(const World &world);
+
+	World *_world;
 
 	/**
 	 * Waits for up to the given number of milliseconds, remaining
@@ -89,8 +82,6 @@ private:
 	 */
 	void waitMillis(uint32 ms);
 
-	Common::String _lastSceneName;
-	Common::Array<Scene::ProjectedHotspot> _lastHotspots;
 protected:
 	// Engine APIs
 	Common::Error run() override;
@@ -111,8 +102,7 @@ public:
 	 * Plays an HNM6 movie from data/movies/<name>.hnm to completion (or
 	 * until skipped via any keypress/click, or the engine is asked to
 	 * quit). Uses HNMPlayer (see hnmplayer.h), a thin non-blocking wrapper
-	 * around Video::HNMDecoder shared with Scene's looping backdrop
-	 * playback; embedded APC audio, if any, is handled automatically by
+	 * around Video::HNMDecoder; embedded APC audio, if any, is handled automatically by
 	 * HNMDecoder itself. See hnm-apc-compat.md in the reversing notes for
 	 * why this needs no engine-specific decoding work.
 	 */
@@ -134,22 +124,8 @@ public:
 	 */
 	void showSPRCell(const Common::String &name, uint32 cellIndex, uint32 durationMs);
 
-	/**
-	 * Enters the scene loop for data/scenes_3d/<name>.bfg + its HNM
-	 * backdrops -- see Scene::load()/Scene::run(). Used by both
-	 * runGame()'s navigation loop and the `scene <name>` console command.
-	 * @p simulateClick forwards to Scene::run() (see its doc comment).
-	 * Caches the visited scene's name and projected hotspots (see
-	 * lastSceneName()/lastSceneHotspots(), used by the `hotspots` console
-	 * command) and returns whatever action the scene resolved.
-	 */
-	NavAction enterScene(const Common::String &name, bool simulateClick = false);
-
-	/** Name of the most recently entered scene (via enterScene()), or empty if none yet. */
-	const Common::String &lastSceneName() const { return _lastSceneName; }
-
-	/** The most recently entered scene's projectedHotspots() snapshot -- see the `hotspots` console command. */
-	const Common::Array<Scene::ProjectedHotspot> &lastSceneHotspots() const { return _lastHotspots; }
+	/** The running World, or null outside runWorld()/runScript() (used by the console). */
+	World *world() const { return _world; }
 
 	/**
 	 * Gets a random number

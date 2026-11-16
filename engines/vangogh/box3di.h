@@ -23,168 +23,89 @@
 #define VANGOGH_BOX3DI_H
 
 #include "common/array.h"
-#include "common/rect.h"
 #include "common/scummsys.h"
 #include "common/str.h"
 
 namespace Vangogh {
 
+class BFGFile;
+
 /**
- * A scene's static, hardcoded fixed camera pose: position `(x,y,z)` in the
- * same raw integer units as `.3DI` box coordinates (millimetre-scale),
- * plus 2 BAM-encoded (12-bit, `& 0xfff`, 4096 units/circle) rotation
- * angles -- yaw about Y applied before pitch about X, the convention
- * scene_hotspots.py adopts (see its module docstring's "CONFIDENCE
- * CAVEAT": the exact axis order/sign baked into PEINTRE.exe's
- * fcn.004411c0 was not decoded bit-for-bit, but this reproduces
- * plausible, mostly-on-screen results against real `.3DI` data). Ported
- * from the literal table baked into fcn.00427600 -- see
- * cameraPoseForScene() below for the concrete per-scene numbers.
+ * One `.3DI` collision/ground volume (`BOX.3DI`, `BOX1.3DI`, ...): a soup of
+ * one-sided triangles with precomputed plane, edge planes and bounding box.
+ * Format reference: PEINTRE.exe sub_43a7c0 (relocator) and
+ * sub_425300 / sub_440fa0 (consumers), vangogh-re notes/world.md sec.2.
+ *
+ * Record body (little-endian dwords; every "pointer" is stored as
+ * `bodyOffset + 1`):
+ *   [0] vertex count, [1] -> int32[3] vertices, [2] triangle count,
+ *   [3] -> 0x60-byte triangles, [4] normal count, [5] -> int32[3] normals.
+ * Triangle (0x60 bytes): +0x00/+4/+8 vertex pointers, +0x0c normal pointer
+ * (1.15 fixed point), +0x10 plane offset d (n.p >> 15 == d on the plane),
+ * +0x14.. three edge normals (1.15) and +0x38.. three edge offsets (a point is
+ * inside edge i when edgeNormal.p >> 15 - edgeD >= 0), +0x48 AABB min,
+ * +0x54 AABB max.
  */
-struct CameraPose {
-	int32 x, y, z;
-	int32 rotYawBam;   ///< "rotA" in scene_hotspots.py/scene-flow.md sec.3.3.
-	int32 rotPitchBam; ///< "rotB".
+class CollisionMesh {
+public:
+	struct Tri {
+		int32 v[3][3];
+		int32 n[3];
+		int32 d;
+		int32 edge[3][3];
+		int32 edgeD[3];
+		int32 bmin[3];
+		int32 bmax[3];
+	};
+
+	/** Loads the 3DI record @p recordName (e.g. "BOX1.3DI") out of @p bfg; false if missing or malformed. */
+	bool load(const BFGFile &bfg, const char *recordName);
+	void clear() { _tris.clear(); }
+
+	uint size() const { return _tris.size(); }
+	const Tri &tri(uint i) const { return _tris[i]; }
+
+private:
+	Common::Array<Tri> _tris;
 };
 
 /**
- * One of the 4 fixed viewport rects the real renderer/hit-tester uses
- * (`fcn.0043b460` call sites, scene-flow.md sec.3.3) -- level 0 is the
- * normal full-room view; 1..3 are the progressively tighter object
- * close-up zooms used by the SAME hit-test (`fcn.00425e50`'s per-zoom
- * bounding rects match these exactly). Only level 0 is used for Scene's
- * room-level hotspot picking; the others exist for parity with
- * scene_hotspots.py's ZOOM_VIEWPORTS and possible future close-up work.
+ * The exe's collision world (0x6f7700): exactly one 3DI mesh is active at a
+ * time (SetBox(n) removes the current box and adds the new one) and is used
+ * for two things: the camera ground-follow ray (sub_42ac60) and the camera
+ * sphere push-out (sub_425c00 / sub_4256b0). All maths is the exe's integer /
+ * truncating-float maths; nothing here allocates per call.
  */
-struct ZoomViewport {
-	int16 width, height, offsetX, offsetY;
-};
+class CollisionWorld {
+public:
+	CollisionWorld() : _mesh(nullptr) {}
 
-/** The 4 literal zoom-level viewports, indices 0-3 (see ZoomViewport). */
-extern const ZoomViewport kZoomViewports[4];
-
-/** Literal focal-length-style projection scale, identical at all 4 zoom levels (fcn.0043b460). */
-const int kCameraFocalLength = 480;
-
-/**
- * Looks up @p sceneName's literal default camera pose, transcribed from
- * PEINTRE.exe's fcn.00427600 (scene-flow.md sec.3.3/sec.6;
- * scene_hotspots.py's CAMERA_POSES) -- 12 of 14 scenes have a recovered
- * literal. `chambrev` shares `chambreb`'s pose (day/night variant of the
- * same room, scene-load-findings.md sec.1). Returns false, filling @p out
- * with a documented IDENTITY fallback (origin position, zero rotation),
- * for the 2 scenes with no recovered literal: `auberge` (the literal this
- * session's reversing found is a suspicious all-zero placeholder, almost
- * certainly inherited/uninitialized state, not a real pose) and
- * `hopiext` (not located in the switches transcribed at all). This is
- * NOT a guess at the real pose -- callers SHOULD log that projections for
- * such a scene are unreliable when this returns false.
- */
-bool cameraPoseForScene(const Common::String &sceneName, CameraPose &out);
-
-/**
- * Projects one world-space point (raw `.3DI` units) through @p camera at
- * @p zoomLevel (0-3, see kZoomViewports), field-for-field matching
- * scene_hotspots.py's project(): rotate by yaw then pitch, translate
- * relative to the camera, then perspective-divide by camera-space Z. @p
- * outDepth receives that camera-space Z -- <=0 means the point is behind
- * the camera (not really visible/pickable). Returns false (outputs left
- * unset) only in the degenerate case `|Zc| < 1e-6`, mirroring the Python
- * reference's `return None`.
- */
-bool projectPoint(const double world[3], const CameraPose &camera, int zoomLevel, double &outX, double &outY, double &outDepth);
-
-/**
- * One oriented-hexahedron (extruded quadrilateral prism) hotspot/collision
- * volume decoded from a scene's `BOX.3DI` record -- see findOrientedBoxes()
- * below for the on-disk format and the detection algorithm, ported from
- * vangogh-notes round3/mesh_3dm_parser.py (itself re-verified from
- * milestone2/3dc-format.md sec.3, "the one format ... fully validated
- * end-to-end"). All coordinates are in raw file units (millimetres,
- * inferred but not confirmed -- no explicit units field exists on disk).
- */
-struct HotspotBox {
-	uint32 index = 0;          ///< 0-based order of discovery; matches the Python tool's own enumeration order.
-	uint32 startWord = 0;      ///< i32-array offset (from the payload scan start) where this box's 8 corners begin; diagnostic only.
-	int heightAxis = 0;        ///< Which raw axis (0/1/2) is this box's "vertical" extrusion axis.
-	int otherAxes[2] = {0, 0}; ///< The other two axes, ascending order; these span the box's horizontal footprint plane.
-	double bottomHeight = 0.0; ///< Extent along heightAxis where the footprint starts.
-	double topHeight = 0.0;    ///< Extent along heightAxis where the footprint ends (topHeight > bottomHeight).
+	/** Makes @p mesh (may be null) the active volume; the mesh must outlive its activation. */
+	void setActive(const CollisionMesh *mesh);
+	const CollisionMesh *active() const { return _mesh; }
 
 	/**
-	 * All 8 corners: [0..3] = bottom face, [4..7] = top face, both using
-	 * the SAME CCW-sorted footprint (see findOrientedBoxes() -- the top
-	 * face's own raw corner order is discarded once it's confirmed to
-	 * match the bottom footprint within tolerance, exactly like
-	 * box_to_vertices() in the reversing notes).
+	 * sub_42ac60 ground probe: casts the segment from @p cam to
+	 * (x+1, y+1000+@p probeOffset, z+1) against the active triangles and, on
+	 * the nearest hit, returns true with @p outY = hitY - 650.
 	 */
-	double vertices[8][3] = {};
+	bool groundY(const int32 cam[3], int32 probeOffset, int32 &outY) const;
 
 	/**
-	 * Real per-scene fixed-camera projection, ported from
-	 * scene_hotspots.py's project()+dump_scene()'s bbox reduction:
-	 * projects all 8 corners through @p camera at @p zoomLevel, keeps
-	 * only the corners in FRONT of the camera (camera-space Z>0, exactly
-	 * dump_scene()'s `in_front` filter), and returns their screen-space
-	 * bounding box plus the NEAREST (smallest positive) camera-space Z
-	 * among them in @p outNearestDepth -- for nearest-depth-wins hit
-	 * testing across multiple overlapping boxes. Returns false (leaving
-	 * both outputs unset) if every corner is behind the camera/degenerate
-	 * at this pose, mirroring dump_scene()'s "entirely behind camera or
-	 * degenerate -- not visible/pickable" branch.
+	 * sub_425c00: sweeps a sphere of @p radius from @p prev (updated in place)
+	 * towards @p cur in steps of at most radius/2, pushing it out of the
+	 * triangles it touches. Returns the number of corrections; if non-zero
+	 * @p prev holds the corrected centre (the new camera position). As in the
+	 * exe, @p prev is left one step beyond @p cur when nothing was hit.
 	 */
-	bool projectToScreen(const CameraPose &camera, int zoomLevel, Common::Rect &outRect, double &outNearestDepth) const;
+	int moveSphere(const int32 cur[3], int32 prev[3], int32 radius);
+
+private:
+	int pushOut(int32 pos[3], int32 radius);
+
+	const CollisionMesh *_mesh;
+	Common::Array<uint> _cand;	///< broad-phase candidate triangle indices, preallocated to the mesh size
 };
-
-/**
- * Detects oriented-hexahedron prisms in a flat little-endian i32 payload --
- * a brute-force, heuristic sliding-window scan ported field-for-field from
- * mesh_3dm_parser.py's find_oriented_boxes()/box_to_vertices() (see
- * round3/mesh_3dm-geometry.md and milestone2/3dc-format.md sec.3 for the
- * reversing trail). There is no length-prefixed box list on disk -- boxes
- * are simply wherever 8 consecutive (x,y,z) triples happen to describe one,
- * interleaved with other, not-yet-understood sub-records (see
- * 3dc-format.md sec.3.2's "unit vectors scaled by 32768" remainder) that
- * this scan silently steps over one i32 at a time.
- *
- * At each candidate start position, 8 consecutive (x,y,z) triples are read
- * (corners 0..3 = "bottom", 4..7 = "top") and, for each candidate height
- * axis in turn (0, 1, then 2 -- the first one that fits wins, matching the
- * Python reference's `for h_axis in range(3): ... return` short-circuit):
- *   1. both quadruples must be flat along that axis (extent <= @p tol);
- *   2. the bottom footprint (the other two axes), CCW-sorted around its own
- *      centroid, must match the top footprint's 4 points within @p tol,
- *      pairwise (a greedy nearest-unused match, not a sorted comparison --
- *      see the .cpp);
- *   3. the resulting height must span at least 50 raw units;
- *   4. the footprint's shoelace area (x2) must be at least 5000 raw units^2;
- *   5. none of the height or footprint values may equal a
- *      likely-invalid-data sentinel (-32768, -32767, 32767, 32768).
- * A match consumes exactly 24 i32 (the 8 corners) and scanning resumes
- * right after; a non-match slides the window by one i32 and retries --
- * including the exact off-by-one in the outer loop bound (`i < count - 24`,
- * not `<=`) that the Python reference has, so counts match it exactly.
- *
- * @param arr Little-endian-decoded i32 payload (the record's bytes AFTER
- *            its own 24-byte shared header -- see decodeHotspotBoxes()).
- * @param count Number of i32 entries in @p arr.
- * @param tol Coordinate tolerance for the flatness/matching checks above;
- *            defaults to 3, matching the Python reference's default.
- */
-Common::Array<HotspotBox> findOrientedBoxes(const int32 *arr, uint32 count, int tol = 3);
-
-/**
- * Convenience wrapper around findOrientedBoxes(): skips a decoded `.3DI`
- * record's shared 24-byte header (next/size/type/2x reserved/count, see
- * 3dc-format.md sec.1 and sec.3.1 -- `count` sits right before the payload
- * findOrientedBoxes() scans, at the same offset the Python reference's
- * `struct.unpack_from(f'<{n}i', box_blob, 24)` starts from), and converts
- * the remaining bytes from little-endian i32.
- *
- * @param boxRecordBytes A `BOX.3DI` record's full decompressed bytes (as
- *                        returned by BFGFile::getRecord()), header included.
- */
-Common::Array<HotspotBox> decodeHotspotBoxes(const Common::Array<byte> &boxRecordBytes, int tol = 3);
 
 } // End of namespace Vangogh
 

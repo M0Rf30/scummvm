@@ -24,29 +24,34 @@
 #include "vangogh/detection.h"
 #include "vangogh/console.h"
 #include "vangogh/hnmplayer.h"
-#include "vangogh/scene.h"
 #include "vangogh/spr.h"
+#include "vangogh/world.h"
 #include "vangogh/tgp.h"
 #include "common/archive.h"
 #include "common/config-manager.h"
 #include "common/debug.h"
 #include "common/events.h"
+#include "common/fs.h"
+#include "common/tokenizer.h"
 #include "common/file.h"
 #include "common/rect.h"
 #include "common/system.h"
 #include "common/textconsole.h"
 #include "common/util.h"
 #include "engines/util.h"
+#include "graphics/cursorman.h"
 #include "graphics/surface.h"
-#include "image/bmp.h"
 #include "image/tga.h"
+#ifdef USE_PNG
+#include "image/png.h"
+#endif
 
 namespace Vangogh {
 
 VangoghEngine *g_engine;
 
 VangoghEngine::VangoghEngine(OSystem *syst, const ADGameDescription *gameDesc) : Engine(syst),
-	_gameDescription(gameDesc), _randomSource("Vangogh") {
+	_gameDescription(gameDesc), _randomSource("Vangogh"), _world(nullptr) {
 	g_engine = this;
 }
 
@@ -94,6 +99,13 @@ Common::Error VangoghEngine::run() {
 	initGraphics(640, 480, nullptr);
 	_screen = new Graphics::Screen();
 
+	// Headless test harness: no splashes, no intro, just the scripted world.
+	if (ConfMan.hasKey("vangogh_script")) {
+		runScript(ConfMan.get("vangogh_script"));
+		quitGame();	// don't fall back to the launcher
+		return Common::kNoError;
+	}
+
 	showIntro();
 
 	// Real intro cutscene (data/movies/intro.hnm, scene-flow.md sec.1.5:
@@ -102,18 +114,10 @@ Common::Error VangoghEngine::run() {
 	if (!shouldQuit())
 		playVideo("intro");
 
-	// Approximated main menu (accueil.bmp + clickable BUTTON regions --
-	// see showAccueil()). A Start click (or Enter, or boot_param) begins
-	// a new game; Quit (or Escape, or closing the window) does not.
-	bool startGame = true;
+	// New games start in the museum (world.md sec.8.1); the ScummVM launcher
+	// replaces the original profile dialog.
 	if (!shouldQuit())
-		startGame = showAccueil();
-
-	// New-game entry point is always musee (scene 0, scene-flow.md
-	// sec.1.5/sec.0.6); runGame() drives every subsequent hotspot-click
-	// transition across the recovered navigation graph (navgraph.h).
-	if (!shouldQuit() && startGame)
-		runGame();
+		runWorld();
 
 	return Common::kNoError;
 }
@@ -301,148 +305,249 @@ void VangoghEngine::showSPRCell(const Common::String &name, uint32 cellIndex, ui
 	waitMillis(durationMs);
 }
 
-NavAction VangoghEngine::enterScene(const Common::String &name, bool simulateClick) {
-	Scene scene(name);
-	if (!scene.load()) {
-		warning("Vangogh: enterScene('%s'): nothing to show (no backdrop, no hotspot boxes, no nav edges)", name.c_str());
-		_lastSceneName = name;
-		_lastHotspots.clear();
-		return NavAction();
-	}
+namespace {
 
-	scene.run(simulateClick);
+// Original frame period (timer sub_4336b0, 66 ms) and ticks per second of the exe's clock.
+const uint32 kFrameMs = 66;
+const float kTicksPerMs = 30.0f / 1000.0f;
 
-	_lastSceneName = name;
-	_lastHotspots = scene.projectedHotspots();
-	return scene.resolvedAction();
-}
-
-void VangoghEngine::runGame() {
-	Common::String current = sceneNameForId(kSceneMusee);
-
-	// Headless/automated runs (--boot-param=1) have no real input device;
-	// simulate exactly ONE hotspot click (in whichever scene visit needs
-	// it first) to demonstrate a real transition end-to-end, then let the
-	// chain end naturally (the next scene's own auto-advance timeout,
-	// Scene::run()'s existing boot_param handling) instead of cascading
-	// through the whole 23-edge graph unattended.
-	int simulateHopsRemaining = ConfMan.hasKey("boot_param") ? 1 : 0;
-
-	while (!shouldQuit()) {
-		const NavAction action = enterScene(current, simulateHopsRemaining > 0);
-
-		if (action.kind == NavAction::kQuit) {
-			quitGame();
-			break;
+/** Folds one ScummVM event into the per-frame input (held keys persist, edges are cleared by the caller). */
+void mapWorldEvent(const Common::Event &event, WorldInput &in) {
+	switch (event.type) {
+	case Common::EVENT_MOUSEMOVE:
+		in.mouseX = CLIP<int>(event.mouse.x, 0, 639);
+		in.mouseY = CLIP<int>(event.mouse.y, 0, 479);
+		break;
+	case Common::EVENT_LBUTTONDOWN:
+		in.mouseX = CLIP<int>(event.mouse.x, 0, 639);
+		in.mouseY = CLIP<int>(event.mouse.y, 0, 479);
+		in.click = true;
+		break;
+	case Common::EVENT_KEYDOWN:
+	case Common::EVENT_KEYUP: {
+		const bool down = event.type == Common::EVENT_KEYDOWN;
+		const bool edge = down && !event.kbdRepeat;
+		switch (event.kbd.keycode) {
+		case Common::KEYCODE_UP: in.up = down; break;
+		case Common::KEYCODE_DOWN: in.down = down; break;
+		case Common::KEYCODE_LEFT: in.left = down; break;
+		case Common::KEYCODE_RIGHT: in.right = down; break;
+		case Common::KEYCODE_PAGEUP: in.pgUp = down; break;
+		case Common::KEYCODE_PAGEDOWN: in.pgDown = down; break;
+		case Common::KEYCODE_LALT:
+		case Common::KEYCODE_RALT: in.alt = down; break;
+		case Common::KEYCODE_F1: in.f1 |= edge; break;
+		case Common::KEYCODE_BACKSPACE: in.backspace |= edge; break;
+		case Common::KEYCODE_SPACE: in.space |= edge; break;
+		case Common::KEYCODE_ESCAPE: in.esc |= edge; break;
+		case Common::KEYCODE_RETURN:
+		case Common::KEYCODE_KP_ENTER: in.click |= edge; break;	// Enter is the keyboard click
+		default: break;
 		}
-		if (action.kind == NavAction::kNone || action.kind == NavAction::kLocal)
-			break; // nothing left to do: window closed, Escape pressed, or (shouldn't happen -- Scene::run() only
-			       // returns on a leaving action or no action) a stray local-only result.
-
-		if (simulateHopsRemaining > 0)
-			simulateHopsRemaining--;
-
-		current = (action.kind == NavAction::kHub) ? sceneNameForId(kSceneMusee) : action.targetScene;
+		break;
 	}
-
-	debug("Vangogh: navigation loop ended (last scene '%s')", current.c_str());
+	default:
+		break;
+	}
 }
 
-bool VangoghEngine::showAccueil() {
-	const Common::Path bmpPath("local/accueil.bmp");
+inline void clearEdges(WorldInput &in) {
+	in.f1 = in.backspace = in.space = in.esc = in.click = false;
+}
 
-	Common::File bmpFile;
-	if (!bmpFile.open(bmpPath)) {
-		warning("Vangogh: could not open menu background %s -- starting the game directly", bmpPath.toString().c_str());
-		return true;
-	}
+} // end of anonymous namespace
 
-	Image::BitmapDecoder decoder;
-	if (!decoder.loadStream(bmpFile)) {
-		warning("Vangogh: failed to decode menu background %s -- starting the game directly", bmpPath.toString().c_str());
-		return true;
-	}
-
-	// Reversed Win32 BUTTON rects, assuming a 640x480 surface with
-	// baseX=baseY=0 (scene-flow.md sec.1.3). Only "Go"/start and "Quit"
-	// are wired to an action; the player-name EDIT control and the
-	// save-slot rows are non-goals here (no save/load) -- slots are kept
-	// as logged no-ops rather than silently invisible/dead.
-	const Common::Rect kStartButton(407, 396, 443, 419);
-	const Common::Rect kQuitButton(468, 396, 540, 423);
-	const Common::Rect kPlayerSlots[5] = {
-		Common::Rect(90, 217, 252, 244),
-		Common::Rect(90, 251, 252, 278),
-		Common::Rect(90, 285, 252, 312),
-		Common::Rect(90, 319, 252, 346),
-		Common::Rect(90, 353, 252, 380),
-	};
-
-	debug("Vangogh: showing accueil.bmp menu (click/Enter Start to begin, Quit/Escape to exit)");
-
-	const Graphics::Surface *surface = decoder.getSurface();
-	const Common::Point dest((_screen->w - surface->w) / 2, (_screen->h - surface->h) / 2);
-	_screen->blitFrom(*surface, dest);
-	// Subtle visual affordance for the two wired buttons -- accueil.bmp's
-	// own BOUTONS.BMP-drawn button faces aren't reproduced here (out of
-	// this milestone's scope), just enough of an outline that the
-	// approximation isn't a fully invisible click target.
-	_screen->frameRect(kStartButton, _screen->format.RGBToColor(255, 255, 255));
-	_screen->frameRect(kQuitButton, _screen->format.RGBToColor(255, 255, 255));
+void VangoghEngine::presentWorld(const World &world) {
+	_screen->blitFrom(world.surface());
 	_screen->update();
+}
 
-	// Automated/headless runs (e.g. `--boot-param=1`, used for CI smoke
-	// tests under SDL_VIDEODRIVER=dummy where no real input device
-	// exists) skip the wait and advance immediately, exactly as if
-	// "Start" had been clicked.
-	if (ConfMan.hasKey("boot_param")) {
-		debug("Vangogh: boot_param set, advancing past accueil immediately");
-		return true;
+void VangoghEngine::runWorld() {
+	World world;
+	if (!world.init())
+		warning("Vangogh: mouse cursors unavailable, using the system cursor");
+	if (!world.enterScene(kSceneMusee, 0)) {
+		warning("Vangogh: could not load the museum scene");
+		return;
 	}
+	_world = &world;
+	CursorMan.showMouse(true);
 
+	WorldInput in;
+	uint32 last = g_system->getMillis();
 	while (!shouldQuit()) {
+		const uint32 frameStart = g_system->getMillis();
+
+		clearEdges(in);
 		Common::Event event;
-		while (g_system->getEventManager()->pollEvent(event)) {
-			switch (event.type) {
-			case Common::EVENT_QUIT:
-			case Common::EVENT_RETURN_TO_LAUNCHER:
-				return false;
-			case Common::EVENT_LBUTTONDOWN:
-				if (kStartButton.contains(event.mouse)) {
-					debug("Vangogh: accueil: Start clicked");
-					return true;
-				}
-				if (kQuitButton.contains(event.mouse)) {
-					debug("Vangogh: accueil: Quit clicked");
-					return false;
-				}
-				for (uint i = 0; i < ARRAYSIZE(kPlayerSlots); i++) {
-					if (kPlayerSlots[i].contains(event.mouse)) {
-						debug("Vangogh: accueil: player slot %u clicked (save/load not implemented, ignoring)", i);
-						break;
-					}
-				}
-				break;
-			case Common::EVENT_KEYDOWN:
-				// Mirrors the real accueil window's Enter->"Go"/
-				// Escape->"Quit" shortcuts (scene-flow.md sec.1.4).
-				if (event.kbd.keycode == Common::KEYCODE_RETURN) {
-					debug("Vangogh: accueil: Enter pressed (Start)");
-					return true;
-				}
-				if (event.kbd.keycode == Common::KEYCODE_ESCAPE) {
-					debug("Vangogh: accueil: Escape pressed (Quit)");
-					return false;
-				}
-				break;
-			default:
-				break;
+		while (g_system->getEventManager()->pollEvent(event))
+			mapWorldEvent(event, in);
+
+		// dt in original ticks; the exe's tick counter (dat_5e4040) is clamped to 1..10.
+		const float dt = CLIP<float>((float)(frameStart - last) * kTicksPerMs, 1.0f, 10.0f);
+		last = frameStart;
+
+		world.frame(in, dt);
+		presentWorld(world);
+		world.updateCursor();
+
+		if (world.takeMenuRequest())
+			openMainMenuDialog();
+		if (getDebugger())
+			getDebugger()->onFrame();
+
+		const uint32 spent = g_system->getMillis() - frameStart;
+		if (spent < kFrameMs)
+			g_system->delayMillis(kFrameMs - spent);
+	}
+	_world = nullptr;
+}
+
+#ifdef USE_PNG
+static bool writeShot(const World &world, int mouseX, int mouseY, const Common::String &path) {
+	// Copy the framebuffer and draw the current cursor sprite on it, since PNGs of the surface alone carry no pointer.
+	const Graphics::Surface &src = world.surface();
+	Graphics::Surface shot;
+	shot.copyFrom(src);
+
+	const byte *pix, *pal;
+	int w, h, hx, hy;
+	if (world.cursorImage(world.cursorKind(), pix, w, h, hx, hy, pal)) {
+		for (int y = 0; y < h; y++) {
+			for (int x = 0; x < w; x++) {
+				const byte c = pix[y * w + x];
+				const int px = mouseX - hx + x, py = mouseY - hy + y;
+				if (!c || px < 0 || py < 0 || px >= shot.w || py >= shot.h)
+					continue;
+				*(uint16 *)shot.getBasePtr(px, py) = shot.format.RGBToColor(pal[c * 3], pal[c * 3 + 1], pal[c * 3 + 2]);
 			}
 		}
-		g_system->updateScreen();
-		g_system->delayMillis(10);
 	}
-	return false; // shouldQuit() became true some other way (e.g. return-to-launcher).
+
+	Common::DumpFile out;
+	bool ok = out.open(Common::Path(path, '/')) && Image::writePNG(out, shot);
+	shot.free();
+	if (!ok)
+		warning("Vangogh: script: could not write %s", path.c_str());
+	return ok;
+}
+#endif
+
+void VangoghEngine::runScript(const Common::String &path) {
+	// Script commands, one per line ('#' starts a comment):
+	//   hold <keys>        comma list of up,down,left,right,pgup,pgdn,alt held from now on (none = release all)
+	//   press <key>        one-frame edge for f1, backspace, space, esc or enter
+	//   mouse <x> <y>      move the mouse
+	//   click              left click, delivered on the next frame
+	//   step <n>           run n 66 ms frames with the current input
+	//   goto <scene>       enter a scene as if coming from the museum
+	//   pose x y z a b     teleport the camera
+	//   box <n>            SetBox(n): switch the active collision volume (0 = BOX.3DI, 1.. = the scene's variants)
+	//   print              log scene, pose, hovered object and cursor kind
+	//   shot <file.png>    save the current frame with the cursor drawn on it
+	Common::FSNode scriptNode(Common::Path(path, '/'));
+	Common::SeekableReadStream *stream = scriptNode.createReadStream();
+	if (!stream) {
+		warning("Vangogh: script: cannot open %s", path.c_str());
+		return;
+	}
+
+	World world;
+	if (!world.init())
+		warning("Vangogh: mouse cursors unavailable");
+	if (!world.enterScene(kSceneMusee, 0)) {
+		delete stream;
+		return;
+	}
+	_world = &world;
+
+	WorldInput in;
+	const float dt = (float)kFrameMs * kTicksPerMs;
+	int lineNo = 0;
+	while (!stream->eos() && !shouldQuit()) {
+		Common::String line = stream->readLine();
+		lineNo++;
+		const size_t hash = line.findFirstOf('#');
+		if (hash != Common::String::npos)
+			line = line.substr(0, hash);
+		line.trim();
+		if (line.empty())
+			continue;
+
+		Common::StringTokenizer tok(line, " \t");
+		const Common::String cmd = tok.nextToken();
+		const Common::String a1 = tok.nextToken();
+		const Common::String a2 = tok.nextToken();
+		const Common::String a3 = tok.nextToken();
+		const Common::String a4 = tok.nextToken();
+		const Common::String a5 = tok.nextToken();
+
+		if (cmd == "hold") {
+			in.up = in.down = in.left = in.right = in.pgUp = in.pgDown = in.alt = false;
+			Common::StringTokenizer keys(a1, ",");
+			while (!keys.empty()) {
+				const Common::String k = keys.nextToken();
+				if (k == "up") in.up = true;
+				else if (k == "down") in.down = true;
+				else if (k == "left") in.left = true;
+				else if (k == "right") in.right = true;
+				else if (k == "pgup") in.pgUp = true;
+				else if (k == "pgdn") in.pgDown = true;
+				else if (k == "alt") in.alt = true;
+				else warning("Vangogh: script:%d: unknown key '%s'", lineNo, k.c_str());
+			}
+		} else if (cmd == "press") {
+			if (a1 == "f1") in.f1 = true;
+			else if (a1 == "backspace") in.backspace = true;
+			else if (a1 == "space") in.space = true;
+			else if (a1 == "esc") in.esc = true;
+			else if (a1 == "enter") in.click = true;
+			else warning("Vangogh: script:%d: unknown key '%s'", lineNo, a1.c_str());
+		} else if (cmd == "mouse") {
+			in.mouseX = CLIP(atoi(a1.c_str()), 0, 639);
+			in.mouseY = CLIP(atoi(a2.c_str()), 0, 479);
+		} else if (cmd == "click") {
+			in.click = true;
+		} else if (cmd == "step") {
+			const int n = atoi(a1.c_str());
+			for (int i = 0; i < n && !shouldQuit(); i++) {
+				world.frame(in, dt);
+				clearEdges(in);
+				presentWorld(world);
+				world.updateCursor();
+			}
+		} else if (cmd == "goto") {
+			const int id = World::sceneIdByName(a1);
+			if (id < 0 || !world.enterScene(id, 0))
+				warning("Vangogh: script:%d: cannot enter scene '%s'", lineNo, a1.c_str());
+		} else if (cmd == "pose") {
+			Pose3D p;
+			p.x = atoi(a1.c_str());
+			p.y = atoi(a2.c_str());
+			p.z = atoi(a3.c_str());
+			p.rotA = atoi(a4.c_str());
+			p.rotB = atoi(a5.c_str());
+			world.setPose(p);
+		} else if (cmd == "box") {
+			if (!world.setBox(atoi(a1.c_str())))
+				warning("Vangogh: script:%d: scene has no collision volume %s", lineNo, a1.c_str());
+		} else if (cmd == "print") {
+			const Pose3D p = world.pose();
+			debug("SCRIPT %s scene=%s pose=%d,%d,%d rot=%d,%d hover='%s' cursor=%d", a1.c_str(),
+				world.sceneName(world.scene()).c_str(), p.x, p.y, p.z, p.rotA, p.rotB, world.hoverName(), world.cursorKind());
+		} else if (cmd == "shot") {
+#ifdef USE_PNG
+			writeShot(world, in.mouseX, in.mouseY, a1);
+#else
+			warning("Vangogh: script: this build has no PNG support");
+#endif
+		} else {
+			warning("Vangogh: script:%d: unknown command '%s'", lineNo, cmd.c_str());
+		}
+	}
+
+	delete stream;
+	_world = nullptr;
 }
 
 void VangoghEngine::waitMillis(uint32 ms) {

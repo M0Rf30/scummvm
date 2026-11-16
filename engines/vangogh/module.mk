@@ -9,10 +9,9 @@ MODULE_OBJS = \
 	bfg.o \
 	box3di.o \
 	model3d.o \
-	navgraph.o \
 	renderer3d.o \
+	world.o \
 	hnmplayer.o \
-	scene.o \
 	metaengine.o
 
 # This module can be built as a plugin

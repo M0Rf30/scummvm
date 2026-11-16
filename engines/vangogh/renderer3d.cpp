@@ -21,7 +21,6 @@
 
 #include "vangogh/renderer3d.h"
 #include "vangogh/bfg.h"
-#include "vangogh/box3di.h"
 #include "vangogh/model3d.h"
 
 #include "common/debug.h"
@@ -70,6 +69,13 @@ inline int floorToInt(float f) {
 
 } // end of anonymous namespace
 
+const ZoomViewport kZoomViewports[4] = {
+	{ 640, 480,   0,   0 },
+	{ 512, 384,  64,  48 },
+	{ 400, 300, 120,  90 },
+	{ 320, 240, 160, 120 },
+};
+
 bool defaultPoseForScene(const Common::String &scene, Pose3D &out) {
 	for (uint i = 0; i < ARRAYSIZE(kDefaultPoses); i++) {
 		if (scene.equalsIgnoreCase(kDefaultPoses[i].name)) {
@@ -81,7 +87,7 @@ bool defaultPoseForScene(const Common::String &scene, Pose3D &out) {
 	return false;
 }
 
-Renderer3D::Renderer3D() : _zb(nullptr), _x0(0), _y0(0), _w(kScreenW), _h(kScreenH), _fx(480.0f), _cx(320.0f), _cy(240.0f) {
+Renderer3D::Renderer3D() : _zb(nullptr), _picking(false), _pickX(0), _pickY(0), _pickDepth(0), _pickNode(-1), _curNode(0), _x0(0), _y0(0), _w(kScreenW), _h(kScreenH), _fx(480.0f), _cx(320.0f), _cy(240.0f) {
 	_fb.create(kScreenW, kScreenH, Graphics::PixelFormat(2, 5, 6, 5, 0, 11, 5, 0, 0));
 	_zb = new float[kScreenW * kScreenH];
 	setZoom(0);
@@ -90,6 +96,12 @@ Renderer3D::Renderer3D() : _zb(nullptr), _x0(0), _y0(0), _w(kScreenW), _h(kScree
 Renderer3D::~Renderer3D() {
 	delete[] _zb;
 	_fb.free();
+}
+
+void Renderer3D::bindModel(const Model3D &model) {
+	_hidden.resize(model.numNodes());
+	if (_hidden.size())
+		memset(_hidden.begin(), 0, _hidden.size());
 }
 
 void Renderer3D::setZoom(int zoom) {
@@ -178,6 +190,8 @@ void Renderer3D::render(const Model3D &model, const Pose3D &pose) {
 	memset(_zb, 0, kScreenW * kScreenH * sizeof(float));
 	if (!model.numNodes())
 		return;
+	if (_hidden.size() != model.numNodes())
+		bindModel(model);
 
 	transformModel(model, pose);
 
@@ -187,6 +201,8 @@ void Renderer3D::render(const Model3D &model, const Pose3D &pose) {
 		for (uint l = 0; l < model.numLists(); l++) {
 			const Model3D::FaceList &fl = model.list(l);
 			if (fl.type != passTypes[pass][0] && fl.type != passTypes[pass][1])
+				continue;
+			if (_hidden[fl.node])
 				continue;
 			const uint16 *pal = fl.bank >= 0 ? model.palette(fl.bank) : nullptr;
 			const byte *tex = fl.bank >= 0 ? model.texture(fl.bank) : nullptr;
@@ -251,8 +267,65 @@ void Renderer3D::drawFace(const Model3D &model, int type, const uint16 *pal, con
 	if (area >= 0.0f)
 		return;
 
+	if (_picking) {
+		for (int k = 1; k < n - 1; k++)
+			pickTriangle(s[0], s[k], s[k + 1]);
+		return;
+	}
+
 	for (int k = 1; k < n - 1; k++)
 		rasterTriangle(s[0], s[k], s[k + 1], type, pal, tex, flat);
+}
+
+void Renderer3D::pickTriangle(const ScreenV &a, const ScreenV &b, const ScreenV &c) {
+	// The exe's three half-plane tests (<= 0 for the visible winding), then the plane depth at the pixel.
+	const float e0 = (b.x - a.x) * (_pickY - a.y) - (b.y - a.y) * (_pickX - a.x);
+	const float e1 = (c.x - b.x) * (_pickY - b.y) - (c.y - b.y) * (_pickX - b.x);
+	const float e2 = (a.x - c.x) * (_pickY - c.y) - (a.y - c.y) * (_pickX - c.x);
+	if (e0 > 0.0f || e1 > 0.0f || e2 > 0.0f)
+		return;
+
+	const float sum = e0 + e1 + e2;
+	if (sum == 0.0f)
+		return;
+	const float iz = (e1 * a.iz + e2 * b.iz + e0 * c.iz) / sum;
+	if (iz <= 0.0f)
+		return;
+	const float z = 1.0f / iz;
+	if (z < _pickDepth) {
+		_pickDepth = z;
+		_pickNode = _curNode;
+	}
+}
+
+int Renderer3D::pick(const Model3D &model, int x, int y, float *outDepth) {
+	const int x1 = _x0 + _w, y1 = _y0 + _h;
+	if (x < _x0 || x >= x1 || y < _y0 || y >= y1 || _view.size() != model.numVertices() || _hidden.size() != model.numNodes())
+		return -1;
+
+	_picking = true;
+	_pickX = x + 0.5f;
+	_pickY = y + 0.5f;
+	_pickDepth = 1e30f;
+	_pickNode = -1;
+	for (uint l = 0; l < model.numLists(); l++) {
+		const Model3D::FaceList &fl = model.list(l);
+		if (_hidden[fl.node])
+			continue;
+		_curNode = fl.node;
+		for (uint f = 0; f < fl.numFaces; f++)
+			drawFace(model, fl.type, nullptr, nullptr, 0, fl.firstFace + f);
+	}
+	_picking = false;
+
+	if (outDepth && _pickNode >= 0)
+		*outDepth = _pickDepth;
+	return _pickNode;
+}
+
+void Renderer3D::nodeViewPos(uint node, float out[3]) const {
+	for (int k = 0; k < 3; k++)
+		out[k] = _nodeP[node * 3 + k];
 }
 
 void Renderer3D::rasterTriangle(const ScreenV &a, const ScreenV &b, const ScreenV &c, int type,

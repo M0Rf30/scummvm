@@ -40,11 +40,11 @@ private:
 	/** `showspr <basename> [cellIndex]` - decodes and blits cell [cellIndex] (default 0) of data/sprites/<basename>.spr for 5s. */
 	bool Cmd_showSPR(int argc, const char **argv);
 
-	/** `scene <basename>` - enters the scene loop (backdrop + real-camera hotspot projection/click handling) for data/scenes_3d/<basename>.bfg until a key/quit/transition. */
-	bool Cmd_scene(int argc, const char **argv);
+	/** `goto <scene>` - enters a scene of the running 3D world as if arriving from the museum. */
+	bool Cmd_goto(int argc, const char **argv);
 
-	/** `hotspots` - lists the last-entered scene's projected hotspot boxes (screen rect + bound nav target) and its region-based nav edges. */
-	bool Cmd_hotspots(int argc, const char **argv);
+	/** `pose [x y z rotA rotB]` - prints (or sets) the camera pose of the running 3D world. */
+	bool Cmd_pose(int argc, const char **argv);
 
 	/** `render3d <scene> <out.png> [x y z rotA rotB]` - software-renders scenes_3d/<scene>.bfg to a PNG (default pose if none given). */
 	bool Cmd_render3D(int argc, const char **argv);

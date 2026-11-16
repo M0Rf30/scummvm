@@ -32,6 +32,20 @@ namespace Vangogh {
 class Model3D;
 
 /**
+ * One of the 4 fixed viewport rects of the exe's projection setup
+ * (sub_43b460): level 0 is the full 640x480 view, 1..3 are tighter zooms.
+ */
+struct ZoomViewport {
+	int16 width, height, offsetX, offsetY;
+};
+
+/** The 4 literal zoom-level viewports, indices 0-3 (see ZoomViewport). */
+extern const ZoomViewport kZoomViewports[4];
+
+/** Focal-length-style projection scale, identical at all 4 zoom levels (sub_43b460). */
+const int kCameraFocalLength = 480;
+
+/**
  * Camera as passed to the original SetCamera(x, y, z, rotA, rotB, rotC):
  * rotA = pitch about X, rotB = yaw about Y (12-bit BAM, 4096 = 360 degrees),
  * rotC (roll) is always 0 (world.md sec.9.1).
@@ -58,8 +72,28 @@ public:
 	/** Selects one of the 4 zoom viewports (0 = full 640x480). */
 	void setZoom(int zoom);
 
+	/**
+	 * Prepares the per-node state for @p model (all nodes visible). Must be
+	 * called whenever the model changes, before render()/pick().
+	 */
+	void bindModel(const Model3D &model);
+
+	/** Hides/shows a node's own faces (the exe's HideObject/ShowObject, node flag bit 0); hidden nodes are neither drawn nor picked. */
+	void setNodeHidden(uint node, bool hidden) { _hidden[node] = hidden ? 1 : 0; }
+
 	/** Renders @p model from @p pose. All buffers are preallocated; render() itself does not allocate. */
 	void render(const Model3D &model, const Pose3D &pose);
+
+	/**
+	 * Port of sub_442460 (PickAtMouse): after render(), returns the node whose
+	 * front-facing triangle contains screen pixel (@p x, @p y) with the smallest
+	 * view depth, or -1. Hit-tests the projected triangles of the last render().
+	 * @p outDepth, if given, receives the hit's view-space depth.
+	 */
+	int pick(const Model3D &model, int x, int y, float *outDepth = nullptr);
+
+	/** View-space position of @p node's origin as of the last render(). */
+	void nodeViewPos(uint node, float out[3]) const;
 
 	const Graphics::Surface &surface() const { return _fb; }
 
@@ -70,10 +104,15 @@ private:
 
 	void transformModel(const Model3D &model, const Pose3D &pose);
 	void drawFace(const Model3D &model, int type, const uint16 *pal, const byte *tex, uint16 flat, uint faceIndex);
+	void pickTriangle(const ScreenV &a, const ScreenV &b, const ScreenV &c);
 	void rasterTriangle(const ScreenV &a, const ScreenV &b, const ScreenV &c, int type,
 		const uint16 *pal, const byte *tex, uint16 flat);
 
 	Graphics::Surface _fb;
+	Common::Array<byte> _hidden;	///< per node, 1 = faces skipped
+	bool _picking;
+	float _pickX, _pickY, _pickDepth;
+	int _pickNode, _curNode;
 	float *_zb;		///< 1/z, 0 = empty
 	Common::Array<float> _nodeM;	///< 9 floats per node, view matrix
 	Common::Array<float> _nodeP;	///< 3 floats per node, view position
