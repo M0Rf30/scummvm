@@ -545,17 +545,9 @@ bool World::aimAt(const char *name, int dist) {
 	const int n = _model.findNode(name);
 	if (n < 0)
 		return false;
-	// Node position in world space = camera + M * (view-space position of the last render), M = V^T.
-	float v[3];
-	if (!_renderer.nodeViewCentroid(_model, n, v))
-		_renderer.nodeViewPos(n, v);
-	const float ang = 2.0f * (float)M_PI / 4096.0f;
-	const float a = (float)(_rotA & 0xfff) * ang, b = (float)(_rotB & 0xfff) * ang;
-	const float sa = sinf(a), ca = cosf(a), sb = sinf(b), cb = cosf(b);
-	const float V[9] = { cb, 0.0f, -sb, sa * sb, ca, cb * sa, sb * ca, -sa, cb * ca };
 	float p[3];
-	for (int j = 0; j < 3; j++)
-		p[j] = (float)_pos[j] + V[j] * v[0] + V[3 + j] * v[1] + V[6 + j] * v[2];
+	if (!nodeCentre(name, p))
+		return false;
 	// Try camera spots on rings around the node (nearest and straightest first) until the real pick at the screen
 	// centre returns the node, the camera survives collide() and nothing opaque is in the way.
 	const float ang2 = 2.0f * (float)M_PI / 4096.0f;

@@ -151,6 +151,25 @@ public:
 	 */
 	bool aimAt(const char *name, int dist);
 
+	/**
+	 * Script bot (walker.cpp): the player's hands for the playthrough scripts. They only produce the same inputs a
+	 * player has (arrow keys, pointer position); collision, pick and all game logic run unchanged.
+	 *
+	 * Node centre (vertex centroid, world space) of node @p name as of the last render; false if unknown.
+	 */
+	bool nodeCentre(const char *name, float out[3]) const;
+	/**
+	 * Plans a route over the walkable floor of the active collision volume (grid of sphere sweeps, like describeReach)
+	 * from the camera to the nearest cell within @p radius (horizontal) of (@p tx, @p tz) and returns its waypoints.
+	 */
+	bool planWalk(int tx, int tz, int radius, Common::Array<int16> &path, int minRadius = 0);
+	/** Sets the arrow keys of @p in to walk towards (@p tx, @p tz); true once within @p tol of it. */
+	bool steer(WorldInput &in, int tx, int tz, int tol);
+	/** Sets the arrow/page keys of @p in to look at world point @p target; true once it is within the view's middle. */
+	bool turnTo(WorldInput &in, const float target[3]);
+	/** Finds a screen pixel whose pick is node @p name (nearest to the screen centre) after the last render. */
+	bool screenPointOf(const char *name, int &x, int &y);
+
 	/** Name of the pickable object under the mouse as of the last frame ("" if none). */
 	const char *hoverName() const { return _hoverName; }
 	/** Cursor kind (0..13, the exe's cursor table index) to show for the last frame. */

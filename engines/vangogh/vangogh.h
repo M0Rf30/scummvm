@@ -73,6 +73,12 @@ private:
 	 * the command list.
 	 */
 	void runScript(const Common::String &path);
+	/** The command loop of runScript(), re-entered by the "include" command. */
+	void runScriptStream(World &world, WorldInput &in, float dt, Common::SeekableReadStream *stream, const Common::String &name);
+	/** The playthrough bot commands of runScript() (walk, look, hover, use, store, skipclip). */
+	void botCommand(World &world, WorldInput &in, float dt, const Common::String &cmd, const Common::String &a1,
+		const Common::String &a2, const Common::String &a3, int lineNo);
+	void botFrame(World &world, WorldInput &in, float dt);
 
 	/** Copies the current frame (page or world) to the screen. */
 	void presentWorld(const World &world);

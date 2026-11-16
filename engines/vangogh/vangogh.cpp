@@ -517,59 +517,172 @@ static bool writeShot(const Graphics::Surface &src, const World &world, int mous
 }
 #endif
 
-void VangoghEngine::runScript(const Common::String &path) {
-	// Script commands, one per line ('#' starts a comment):
-	//   hold <keys>        comma list of up,down,left,right,pgup,pgdn,alt held from now on (none = release all)
-	//   press <key>        one-frame edge for f1, backspace, space, esc or enter
-	//   mouse <x> <y>      move the mouse
-	//   click              left click, delivered on the next frame
-	//   step <n> [rt]      run n 66 ms frames with the current input (rt = paced in real time, needed for clips and voices)
-	//   snd <name> [loop]  load+play a sound (Sound::load prefixes: plain, '!' APC, '_' WAV stream), wait, log
-	//   goto <scene>       enter a scene as if coming from the museum
-	//   pose x y z a b     teleport the camera
-	//   aim <node> [dist]  camera dist (default 600) in front of the node, looking at it, mouse on the screen centre
-	//   box <n>            SetBox(n): switch the active collision volume (0 = BOX.3DI, 1.. = the scene's variants)
-	//   newgame            reset the game state (then goto a scene to apply it)
-	//   flag <name> [v]    log (or set) a game state flag: named, A<n>, B<n>, inv<n> or 0x<offset>
-	//   flags              log every set flag
-	//   anim <sel> <op> [n]  3DA animations: op = start, stop, end, pose n, tick n, check ("anim list" lists them)
-	//   objects            log the scene's objects with their runtime types
-	//   reach              log the museum paintings' distance to the walkable floor
-	//   movie <name> <frame> <out.png>  play a movie-table clip (CVY mask included) to frame N and save its surface
-	//   save <slot> [desc] save the game to a ScummVM slot (refused like the menu would: not during clips/glides)
-	//   load <slot>        load a ScummVM slot (the launcher's save_slot key does the same at boot)
-	//   autosave <item>    autosaveAfterPlacement(item): the exe's GAME save on placing an item
-	//   import <file> <slot>  convert an original GAME*.BIN / GGAME*.BIN (native path) into a slot
-	//   down / up          left button pressed (with a click edge) / released: drags drop on release
-	//   page <n>           open 2D page n over the current state
-	//   give <item>        carry item n in 3D as if it had just been picked up
-	//   pagestate [tag]    log the page's state machine state
-	//   spr <name> <cell> <out.png>  log a sprite's cell count/size and draw one cell
-	//   tgp <name> [out.png]         log a TGP's size and save its top-left 640x480
-	//   print              log scene, pose, hovered object and cursor kind
-	//   shot <file.png>    save the current frame with the cursor drawn on it
-	//   until <stage> <max> [rt] [click]  step until the ending stage (cinefin, cinefin2, credits, release, done) is reached
-	//   ending [fin]       start the ending sequence (cinefin, cinefin2, credits, quit); "fin" = the museum fin trigger.
-	//                      The script stops where the game would quit; "step n rt" paces the movies in real time
-	Common::FSNode scriptNode(Common::Path(path, '/'));
-	Common::SeekableReadStream *stream = scriptNode.createReadStream();
-	if (!stream) {
-		warning("Vangogh: script: cannot open %s", path.c_str());
-		return;
-	}
+void VangoghEngine::botFrame(World &world, WorldInput &in, float dt) {
+	gameStep(world, in, dt);
+	clearEdges(in);
+	presentWorld(world);
+	world.updateCursor();
+}
 
-	World world;
-	if (!world.init())
-		warning("Vangogh: mouse cursors unavailable");
-	if (!world.enterScene(kSceneMusee, 0)) {
-		delete stream;
-		return;
-	}
-	_world = &world;
-	bootLoadSlot();
+void VangoghEngine::botCommand(World &world, WorldInput &in, float dt, const Common::String &cmd, const Common::String &a1,
+		const Common::String &a2, const Common::String &a3, int lineNo) {
+	const int scene = world.scene();
+	auto idle = [&](int n) {
+		in.up = in.down = in.left = in.right = in.pgUp = in.pgDown = in.alt = false;
+		for (int i = 0; i < n && !shouldQuit(); i++)
+			botFrame(world, in, dt);
+	};
+	auto walkTo = [&](int tx, int tz, int radius, const char *what, int minRadius) {
+		Common::Array<int16> path;
+		botFrame(world, in, dt);
+		if (!world.planWalk(tx, tz, radius, path, minRadius)) {
+			warning("Vangogh: script:%d: walk %s: no route", lineNo, what);
+			return false;
+		}
+		int frames = 0, stuck = 0;
+		Pose3D last = world.pose();
+		for (uint w = 0; w + 1 < path.size(); w += 2) {
+			const bool final = w + 2 >= path.size();
+			while (!shouldQuit()) {
+				if (world.scene() != scene || world.clipActive() || _page->active() || world.glideFrames() > 0) {
+					warning("Vangogh: script:%d: walk %s: the scene changed on the way", lineNo, what);
+					return false;
+				}
+				if (world.steer(in, path[w], path[w + 1], final ? 60 : 130))
+					break;
+				botFrame(world, in, dt);
+				if (++frames > 4000)
+					break;
+				if (frames % 40 == 0) {
+					const Pose3D p = world.pose();
+					stuck = (ABS(p.x - last.x) + ABS(p.z - last.z) < 60) ? stuck + 1 : 0;
+					last = p;
+					if (stuck >= 3) {
+						warning("Vangogh: script:%d: walk %s: stuck at %d,%d", lineNo, what, p.x, p.z);
+						idle(1);
+						return false;
+					}
+				}
+			}
+			if (frames > 4000) {
+				warning("Vangogh: script:%d: walk %s: gave up", lineNo, what);
+				idle(1);
+				return false;
+			}
+		}
+		idle(6);
+		const Pose3D p = world.pose();
+		debug("SCRIPT walk %s: arrived at %d,%d after %d frames", what, p.x, p.z, frames);
+		return true;
+	};
+	auto lookAt = [&](const char *name) {
+		float c[3];
+		int ok = 0;
+		for (int i = 0; i < 400 && ok < 3 && !shouldQuit(); i++) {
+			if (!world.nodeCentre(name, c)) {
+				warning("Vangogh: script:%d: look: no node '%s'", lineNo, name);
+				return false;
+			}
+			ok = world.turnTo(in, c) ? ok + 1 : 0;
+			botFrame(world, in, dt);
+		}
+		idle(8);
+		return ok >= 3;
+	};
+	auto hoverOn = [&](const char *name, bool quiet) {
+		int x, y;
+		if (!world.screenPointOf(name, x, y)) {
+			if (!quiet)
+				warning("Vangogh: script:%d: hover: '%s' is not visible", lineNo, name);
+			return false;
+		}
+		in.mouseX = x;
+		in.mouseY = y;
+		idle(2);
+		debug("SCRIPT hover %s: pointer %d,%d hover='%s' cursor=%d", name, x, y, world.hoverName(), world.cursorKind());
+		return true;
+	};
 
-	WorldInput in;
-	const float dt = (float)kFrameMs * kTicksPerMs;
+	if (cmd == "drive") {
+		// drive x z frames: steer straight at the point with no route planning (the walk slides along walls).
+		int f = 0;
+		const int n = atoi(a3.c_str());
+		botFrame(world, in, dt);
+		while (!shouldQuit() && f < n && !world.steer(in, atoi(a1.c_str()), atoi(a2.c_str()), 40)) {
+			botFrame(world, in, dt);
+			f++;
+		}
+		idle(4);
+		const Pose3D p = world.pose();
+		debug("SCRIPT drive: at %d,%d after %d frames", p.x, p.z, f);
+	} else if (cmd == "walkxz") {
+		walkTo(atoi(a1.c_str()), atoi(a2.c_str()), a3.empty() ? 150 : atoi(a3.c_str()), "xz", 0);
+	} else if (cmd == "walk" || cmd == "use") {
+		float c[3];
+		botFrame(world, in, dt);
+		if (!world.nodeCentre(a1.c_str(), c)) {
+			warning("Vangogh: script:%d: no node '%s'", lineNo, a1.c_str());
+			return;
+		}
+		if (!walkTo((int)c[0], (int)c[2], a2.empty() ? 800 : atoi(a2.c_str()), a1.c_str(), atoi(a3.c_str())) || cmd == "walk")
+			return;
+		bool seen = lookAt(a1.c_str()) && hoverOn(a1.c_str(), true);
+		// Something stands in the way (a chair, the stove): look from other sides, on a circle around the node.
+		const int dmax = a2.empty() ? 800 : atoi(a2.c_str());
+		const int dmin = a3.empty() ? dmax * 3 / 5 : atoi(a3.c_str());
+		for (int k = 0; !seen && k < 16 && !shouldQuit(); k++) {
+			const float ang = (float)k * 0.3927f;
+			const int rad = (dmin + dmax) / 2;
+			Common::Array<int16> probe;
+			const int tx = (int)c[0] + (int)(sinf(ang) * rad), tz = (int)c[2] + (int)(cosf(ang) * rad);
+			if (!world.planWalk(tx, tz, 120, probe, 0))
+				continue;
+			if (walkTo(tx, tz, 120, a1.c_str(), 0))
+				seen = lookAt(a1.c_str()) && hoverOn(a1.c_str(), true);
+		}
+		if (!seen) {
+			warning("Vangogh: script:%d: use %s: not visible from anywhere reachable", lineNo, a1.c_str());
+		} else {
+			in.click = true;
+			idle(8);
+		}
+	} else if (cmd == "plan") {
+		// plan <node> [dist]: is there a route to within dist of the node, and how long
+		float c[3];
+		Common::Array<int16> path;
+		botFrame(world, in, dt);
+		if (!world.nodeCentre(a1.c_str(), c))
+			warning("Vangogh: script:%d: no node '%s'", lineNo, a1.c_str());
+		else if (world.planWalk((int)c[0], (int)c[2], a2.empty() ? 800 : atoi(a2.c_str()), path, atoi(a3.c_str())))
+			debug("SCRIPT plan %s: route of %u legs%s", a1.c_str(), path.size() / 2, path.empty() ? " (already in range)" : "");
+		else
+			debug("SCRIPT plan %s: NO ROUTE (box %d)", a1.c_str(), world.box());
+	} else if (cmd == "look") {
+		lookAt(a1.c_str());
+	} else if (cmd == "hover") {
+		hoverOn(a1.c_str(), false);
+	} else if (cmd == "store") {
+		in.mouseX = 320;
+		in.mouseY = 470;
+		idle(4);
+		in.click = true;
+		idle(4);
+		in.mouseX = 320;
+		in.mouseY = 240;
+		idle(2);
+	} else if (cmd == "skipclip") {
+		const int max = a1.empty() ? 3000 : atoi(a1.c_str());
+		int i = 0;
+		for (; i < max && !shouldQuit() && (world.clipActive() || world.glideFrames() > 0); i++) {
+			in.click = world.clipActive() && i % 4 == 3;
+			botFrame(world, in, dt);
+		}
+		idle(3);
+		debug("SCRIPT skipclip: %d frames", i);
+	}
+}
+
+void VangoghEngine::runScriptStream(World &world, WorldInput &in, float dt, Common::SeekableReadStream *stream, const Common::String &name) {
 	int lineNo = 0;
 	while (!stream->eos() && !shouldQuit() && !_ending.finished()) {
 		Common::String line = stream->readLine();
@@ -589,6 +702,10 @@ void VangoghEngine::runScript(const Common::String &path) {
 		const Common::String a4 = tok.nextToken();
 		const Common::String a5 = tok.nextToken();
 
+		if (cmd == "walk" || cmd == "walkxz" || cmd == "drive" || cmd == "look" || cmd == "hover" || cmd == "use" || cmd == "plan" || cmd == "store" || cmd == "skipclip") {
+			botCommand(world, in, dt, cmd, a1, a2, a3, lineNo);
+			continue;
+		}
 		if (cmd == "hold") {
 			in.up = in.down = in.left = in.right = in.pgUp = in.pgDown = in.alt = false;
 			Common::StringTokenizer keys(a1, ",");
@@ -623,6 +740,47 @@ void VangoghEngine::runScript(const Common::String &path) {
 			// Same route as clicking a launcher: the next frame hands the request to gameStep().
 			world.requestPage(atoi(a1.c_str()));
 			gameStep(world, in, dt);
+		} else if (cmd == "include") {
+			// include <file>: run another script file here (segments of a playthrough chain through ScummVM saves)
+			Common::FSNode node(Common::Path(a1, '/'));
+			Common::SeekableReadStream *sub = node.createReadStream();
+			if (!sub) {
+				warning("Vangogh: script:%d: cannot include %s", lineNo, a1.c_str());
+			} else {
+				debug("SCRIPT include %s", a1.c_str());
+				runScriptStream(world, in, dt, sub, a1);
+				delete sub;
+			}
+		} else if (cmd == "pwait") {
+			// pwait <state[,state...]> <max> [skip]: page ticks (real time) until the 2D page reaches one of the states or
+			// closes; "skip" holds the button in short pulses so skippable clips and voices end
+			const int max = atoi(a2.c_str());
+			const bool skip = a3 == "skip";
+			int i = 0;
+			bool hit = false;
+			for (; i < max && !shouldQuit() && !_ending.finished(); i++) {
+				if (!_page->active())
+					break;
+				Common::StringTokenizer states(a1, ",");
+				while (!states.empty())
+					hit |= states.nextToken() == _page->stateName();
+				if (hit)
+					break;
+				const uint32 frameStart = g_system->getMillis();
+				if (skip) {
+					in.click = i % 4 == 0;
+					in.mouseDown = i % 4 != 3;
+				}
+				gameStep(world, in, dt);
+				clearEdges(in);
+				presentWorld(world);
+				world.updateCursor();
+				if (g_system->getMillis() - frameStart < framePeriod())
+					g_system->delayMillis(framePeriod() - (g_system->getMillis() - frameStart));
+			}
+			in.mouseDown = false;
+			debug("SCRIPT pwait %s: %s after %d frames (page %d state %s)", a1.c_str(), hit ? "reached" : (_page->active() ? "TIMED OUT" : "page closed"), i,
+				_page->active() ? _page->pageIndex() : -1, _page->active() ? _page->stateName() : "-");
 		} else if (cmd == "give") {
 			world.carryItem(atoi(a1.c_str()));
 		} else if (cmd == "pagestate") {
@@ -808,13 +966,77 @@ void VangoghEngine::runScript(const Common::String &path) {
 			warning("Vangogh: script: this build has no PNG support");
 #endif
 		} else {
-			warning("Vangogh: script:%d: unknown command '%s'", lineNo, cmd.c_str());
+			warning("Vangogh: %s:%d: unknown command '%s'", name.c_str(), lineNo, cmd.c_str());
 		}
 	}
 
+}
+
+void VangoghEngine::runScript(const Common::String &path) {
+	// Script commands, one per line ('#' starts a comment):
+	//   hold <keys>        comma list of up,down,left,right,pgup,pgdn,alt held from now on (none = release all)
+	//   press <key>        one-frame edge for f1, backspace, space, esc or enter
+	//   mouse <x> <y>      move the mouse
+	//   click              left click, delivered on the next frame
+	//   step <n> [rt]      run n 66 ms frames with the current input (rt = paced in real time, needed for clips and voices)
+	//   snd <name> [loop]  load+play a sound (Sound::load prefixes: plain, '!' APC, '_' WAV stream), wait, log
+	//   goto <scene>       enter a scene as if coming from the museum
+	//   pose x y z a b     teleport the camera
+	//   aim <node> [dist]  camera dist (default 600) in front of the node, looking at it, mouse on the screen centre
+	//   box <n>            SetBox(n): switch the active collision volume (0 = BOX.3DI, 1.. = the scene's variants)
+	//   newgame            reset the game state (then goto a scene to apply it)
+	//   flag <name> [v]    log (or set) a game state flag: named, A<n>, B<n>, inv<n> or 0x<offset>
+	//   flags              log every set flag
+	//   anim <sel> <op> [n]  3DA animations: op = start, stop, end, pose n, tick n, check ("anim list" lists them)
+	//   objects            log the scene's objects with their runtime types
+	//   reach              log the museum paintings' distance to the walkable floor
+	//   movie <name> <frame> <out.png>  play a movie-table clip (CVY mask included) to frame N and save its surface
+	//   save <slot> [desc] save the game to a ScummVM slot (refused like the menu would: not during clips/glides)
+	//   load <slot>        load a ScummVM slot (the launcher's save_slot key does the same at boot)
+	//   autosave <item>    autosaveAfterPlacement(item): the exe's GAME save on placing an item
+	//   import <file> <slot>  convert an original GAME*.BIN / GGAME*.BIN (native path) into a slot
+	//   down / up          left button pressed (with a click edge) / released: drags drop on release
+	//   page <n>           open 2D page n over the current state
+	//   give <item>        carry item n in 3D as if it had just been picked up
+	//   pagestate [tag]    log the page's state machine state
+	//   spr <name> <cell> <out.png>  log a sprite's cell count/size and draw one cell
+	//   tgp <name> [out.png]         log a TGP's size and save its top-left 640x480
+	//   print              log scene, pose, hovered object and cursor kind
+	//   shot <file.png>    save the current frame with the cursor drawn on it
+	//   walk <node> [dist] [min]  walk (arrow keys, planned route) to between min (default 0) and dist (default 800) of the node's centre
+	//   walkxz <x> <z> [tol]  the same towards a floor point (default tolerance 150)
+	//   look <node>        turn (arrows, PgUp/PgDn) until the node's centre is in front of the camera
+	//   hover <node>       move the pointer onto a screen pixel that picks the node
+	//   use <node> [dist] [min]  walk, look, hover, click and let the result play for a few frames
+	//   store              drop the carried item in the inventory bar (pointer to the bottom, click)
+	//   skipclip [max]     click through a running arrival/departure clip
+	//   until <stage> <max> [rt] [click]  step until the ending stage (cinefin, cinefin2, credits, release, done) is reached
+	//   ending [fin]       start the ending sequence (cinefin, cinefin2, credits, quit); "fin" = the museum fin trigger.
+	//                      The script stops where the game would quit; "step n rt" paces the movies in real time
+	Common::FSNode scriptNode(Common::Path(path, '/'));
+	Common::SeekableReadStream *stream = scriptNode.createReadStream();
+	if (!stream) {
+		warning("Vangogh: script: cannot open %s", path.c_str());
+		return;
+	}
+
+	World world;
+	if (!world.init())
+		warning("Vangogh: mouse cursors unavailable");
+	if (!world.enterScene(kSceneMusee, 0)) {
+		delete stream;
+		return;
+	}
+	_world = &world;
+	bootLoadSlot();
+
+	WorldInput in;
+	const float dt = (float)kFrameMs * kTicksPerMs;
+	runScriptStream(world, in, dt, stream, path);
 	delete stream;
 	_world = nullptr;
 }
+
 
 // ---------------------------------------------------------------------------
 // Saves. The exe has GAME<user><item>.BIN (one per placed item) and GGAME<user>.BIN (the continue file, written on

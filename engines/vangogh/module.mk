@@ -18,6 +18,7 @@ MODULE_OBJS = \
 	scenelogic.o \
 	renderer3d.o \
 	world.o \
+	walker.o \
 	page.o \
 	pagegames.o \
 	pagegames_p2_p4_p7.o \

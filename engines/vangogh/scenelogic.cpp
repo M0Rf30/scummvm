@@ -255,7 +255,11 @@ void World::describeObjects(Common::String &out) const {
 		int type;
 		bool hidden;
 		objectInfo(i, name, type, hidden);
-		out += Common::String::format("  %-12s type=%3d%s\n", name, type, hidden ? " hidden" : "");
+		float c[3];
+		if (nodeCentre(name, c))
+			out += Common::String::format("  %-12s type=%3d%s at %.0f,%.0f,%.0f\n", name, type, hidden ? " hidden" : "", c[0], c[1], c[2]);
+		else
+			out += Common::String::format("  %-12s type=%3d%s\n", name, type, hidden ? " hidden" : "");
 	}
 }
 
@@ -313,8 +317,15 @@ void World::describeReach(Common::String &out) {
 		}
 	}
 
-	out += Common::String::format("collision volume BOX%d (BOX.3DI = 0): %u of %d grid cells (%d units) are walkable from the camera\n",
-		_box, queue.size(), nx * nz, step);
+	int32 ylo = 0x7fffffff, yhi = -0x7fffffff;
+	for (uint i = 0; i < mesh.size(); i++) {
+		for (int k = 0; k < 3; k++) {
+			ylo = MIN(ylo, mesh.tri(i).v[k][1]);
+			yhi = MAX(yhi, mesh.tri(i).v[k][1]);
+		}
+	}
+	out += Common::String::format("collision volume BOX%d (BOX.3DI = 0): %u of %d grid cells (%d units) are walkable from the camera; extent x %d..%d y %d..%d z %d..%d\n",
+		_box, queue.size(), nx * nz, step, lo[0], hi[0], ylo, yhi, lo[1], hi[1]);
 	for (uint t = 0; _scene == kSceneMusee && t < ARRAYSIZE(kTargets); t++) {
 		const int n = _model.findNode(kTargets[t]);
 		if (n < 0)
@@ -1021,6 +1032,11 @@ void World::initSceneState(Pose3D *pose) {
 			setObjectType("tab01", 3);
 			_model.retexture("TOILES2", "RASOIR");
 			_model.retexture("TOILES", "RASOIR");
+		}
+		// Decomp 11366-11369: page 11 was left with the mirror broken; the room plays "miroir" once.
+		if (s.mirrorSoundPending && !s.isSet(kCbMirrorSoundPlayed)) {
+			s.set(kCbMirrorSoundPlayed, 1);
+			playSound("miroir");
 		}
 		if (s.puzzleSolved(7)) setObjectType("oreiller", 0x3c);
 		if (s.puzzleSolved(8)) setObjectType("tabpay", 0x3c);
